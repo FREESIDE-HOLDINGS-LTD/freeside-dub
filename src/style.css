@@ -79,7 +79,7 @@ body {
 .glass-panel {
   position: relative;
   width: min(720px, 100%);
-  padding: 3.25rem;
+  padding: 3.25rem 3.25rem 1rem;
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   backdrop-filter: blur(12px);
@@ -87,18 +87,26 @@ body {
   box-shadow:
     0 0 60px rgba(0, 0, 0, 0.55),
     inset 0 0 40px rgba(56, 140, 196, 0.14);
-  clip-path: polygon(0 18px, 18px 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
+  clip-path: polygon(
+    0 18px, 
+    18px 0, 
+    calc(100% - 18px) 0, 
+    100% 18px, 
+    100% calc(100% + 1px),  /* extend slightly beyond bottom */
+    0 calc(100% + 1px)       /* extend slightly beyond bottom */
+  );
 }
 
 .boot-tag {
   display: inline-block;
-  margin-bottom: 1rem;
+  margin-bottom: 1.7rem;
   padding: 0.35rem 0.8rem;
   border: 1px solid rgba(121, 235, 255, 0.32);
   color: var(--primary-color);
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.82rem;
   letter-spacing: 0.18rem;
+  width: 100%;
 }
 
 h1 {
@@ -110,15 +118,18 @@ h1 {
   color: var(--text-main);
   text-transform: uppercase;
   text-shadow: 0 0 20px rgba(121, 235, 255, 0.22);
+  margin-left: 1rem;
+  text-indent: -.37rem; 
 }
 
 .headline-accent {
   display: block;
   color: var(--primary-color);
+  text-indent: -.47rem; 
 }
 
 .subhead {
-  margin-top: 1.2rem;
+  margin-top: 1.3rem;
   color: var(--accent-color);
   font-size: 1.1rem;
   font-weight: 700;
@@ -127,7 +138,7 @@ h1 {
 }
 
 .body-copy {
-  margin-top: 1rem;
+  margin-top: .2rem;
   max-width: 38rem;
   color: var(--text-dim);
   font-size: 1.08rem;
@@ -137,7 +148,7 @@ h1 {
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.75rem 1rem;
+  gap: 0.75rem 0.75rem;
   margin-top: 1.3rem;
 }
 
@@ -172,12 +183,12 @@ h1 {
 .status-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 1.5rem;
+  justify-content: space-between;
   margin-top: 1.8rem;
   color: var(--text-dim);
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.86rem;
-  letter-spacing: 0.12rem;
+  letter-spacing: 0.1rem;
   text-transform: uppercase;
 }
 
@@ -187,7 +198,8 @@ h1 {
 }
 
 button {
-  margin-top: 2.25rem;
+  display: block;
+  margin: 2rem auto 0;
   padding: 1rem 2rem;
   border: 1px solid rgba(121, 235, 255, 0.6);
   background: linear-gradient(135deg, rgba(121, 235, 255, 0.08), rgba(255, 139, 232, 0.12));
@@ -197,6 +209,7 @@ button {
   letter-spacing: 0.24rem;
   text-transform: uppercase;
   cursor: pointer;
+  width: 70%;
   transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
@@ -222,7 +235,7 @@ button:active {
 }
 
 .hint {
-  margin-top: 1rem;
+  margin-top: 2rem;
   color: var(--accent-warm);
   font-family: 'Share Tech Mono', monospace;
   font-size: 0.82rem;
