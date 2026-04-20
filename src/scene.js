@@ -5,13 +5,11 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-//import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { grainShader } from './grain.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const WORLD_RIGHT = new THREE.Vector3(1, 0, 0);
-const WORLD_FORWARD = new THREE.Vector3(0, 0, 1);
 const MODEL_TARGET_LENGTH = 10;
 
 const CYAN = new THREE.Color(0x7ae7ff);
@@ -60,13 +58,6 @@ export class SpaceStationScene {
     this.composer = new EffectComposer(this.renderer);
     this.composer.setPixelRatio(this.pixelRatio);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-
-    /*this.fxaaPass = new ShaderPass(FXAAShader);
-    this.fxaaPass.uniforms.resolution.value.set(
-      1 / (window.innerWidth * this.pixelRatio),
-      1 / (window.innerHeight * this.pixelRatio),
-    );
-    this.composer.addPass(this.fxaaPass);*/
 
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor),
@@ -136,14 +127,6 @@ export class SpaceStationScene {
     };
 
     this.panelEntries = [];
-    this.bodyWires = [];
-    this.coreWires = [];
-    this.foreWires = [];
-    this.aftWires = [];
-    this.bodyVertices = [];
-    this.coreVertices = [];
-    this.foreVertices = [];
-    this.aftVertices = [];
     this.coreEffects = [];
     this.foreEffects = [];
     this.aftEffects = [];
@@ -294,14 +277,6 @@ export class SpaceStationScene {
   setStationModel(model) {
     this.stationModelGroup.clear();
     this.panelEntries = [];
-    this.bodyWires = [];
-    this.coreWires = [];
-    this.foreWires = [];
-    this.aftWires = [];
-    this.bodyVertices = [];
-    this.coreVertices = [];
-    this.foreVertices = [];
-    this.aftVertices = [];
     this.coreEffects = [];
     this.foreEffects = [];
     this.aftEffects = [];
@@ -430,20 +405,16 @@ export class SpaceStationScene {
       if (isPanel) {
         this.panelEntries.push(this.createPanelOverlay(child, localSize));
       } else if (wireMaterial === this.wireMaterials.core) {
-        this.coreWires.push(wire);
-        this.coreVertices.push(this.createVertexLayer(child, this.vertexMaterials.core));
+        this.createVertexLayer(child, this.vertexMaterials.core);
         this.createAttachedEffect(child, localSize, 'core');
       } else if (wireMaterial === this.wireMaterials.fore) {
-        this.foreWires.push(wire);
-        this.foreVertices.push(this.createVertexLayer(child, this.vertexMaterials.fore));
+        this.createVertexLayer(child, this.vertexMaterials.fore);
         this.createAttachedEffect(child, localSize, 'fore');
       } else if (wireMaterial === this.wireMaterials.aft) {
-        this.aftWires.push(wire);
-        this.aftVertices.push(this.createVertexLayer(child, this.vertexMaterials.aft));
+        this.createVertexLayer(child, this.vertexMaterials.aft);
         this.createAttachedEffect(child, localSize, 'aft');
       } else {
-        this.bodyWires.push(wire);
-        this.bodyVertices.push(this.createVertexLayer(child, this.vertexMaterials.body));
+        this.createVertexLayer(child, this.vertexMaterials.body);
       }
     });
   }
@@ -540,16 +511,43 @@ export class SpaceStationScene {
     const maxDimension = Math.max(this.stationBounds.x, this.stationBounds.y, this.stationBounds.z, 1);
     const fov = THREE.MathUtils.degToRad(this.camera.fov);
     const distance = (maxDimension * 0.5) / Math.tan(fov * 0.5);
-    const framedDistance = distance * 1;
 
-    this.cameraBasePosition.set(0, Math.max(1.8, this.stationBounds.y * 0.14), framedDistance);
+    this.cameraBasePosition.set(0, Math.max(1.8, this.stationBounds.y * 0.14), distance);
     this.cameraTarget.set(0, 0, 0);
     this.camera.position.copy(this.cameraBasePosition);
     this.camera.lookAt(this.cameraTarget);
   }
 
   setupEventListeners() {
-    window.addEventListener('resize', () => this.onResize());
+    this.boundOnResize = this.onResize.bind(this);
+    window.addEventListener('resize', this.boundOnResize);
+  }
+
+  dispose() {
+    window.removeEventListener('resize', this.boundOnResize);
+
+    if (this.telemetryRoot) {
+      this.telemetryRoot.remove();
+      this.telemetryRoot = null;
+    }
+
+    this.sharedPanelMaterial.dispose();
+    this.sharedInvisibleMaterial.dispose();
+    Object.values(this.wireMaterials).forEach((m) => m.dispose());
+    Object.values(this.vertexMaterials).forEach((m) => m.dispose());
+
+    this.panelEntries.forEach((entry) => {
+      entry.frontMaterial.dispose();
+      entry.backMaterial.dispose();
+    });
+
+    [...this.coreEffects, ...this.foreEffects, ...this.aftEffects].forEach((effect) => {
+      effect.geometry.dispose();
+      effect.material.dispose();
+    });
+
+    this.composer.dispose();
+    this.renderer.dispose();
   }
 
   onResize() {
@@ -557,10 +555,6 @@ export class SpaceStationScene {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.composer.setSize(window.innerWidth, window.innerHeight);
-    /*this.fxaaPass.uniforms.resolution.value.set(
-      1 / (window.innerWidth * this.pixelRatio),
-      1 / (window.innerHeight * this.pixelRatio),
-    );*/
     this.bloomPass.setSize(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor);
   }
 
