@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>freeside dub satellite</title>
+</head>
+
+<body>
+  <div id="ui" class="overlay">
+    <div class="glass-panel">
+      <div class="boot-tag">FREESIDE ORBITAL TELEMETRY</div>
+      <h1>
+        DUB
+        <span class="headline-accent">SATELLITE</span>
+      </h1>
+      <p id="source-subhead" class="subhead">Awaiting uplink probe</p>
+      <p id="source-body" class="body-copy">Polling relay status and preparing a local fallback.</p>
+      <div id="source-metadata" class="metadata-grid"></div>
+      <div class="status-row">
+        <span id="mode-label"><strong>Mode</strong> Deep space telemetry</span>
+        <span id="status-label"><strong>Status</strong> Buffering audio uplink</span>
+      </div>
+      <button id="start-btn">CALIBRATING...</button>
+      <div id="source-hint" class="hint">Audio is click-gated. Thank your browser vendor.</div>
+    </div>
+  </div>
+
+  <div id="canvas-container"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+
+</html>
