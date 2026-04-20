@@ -46,7 +46,7 @@ export class SpaceStationScene {
       alpha: false,
       powerPreference: 'low-power',
     });
-    this.pixelRatio = Math.min(window.devicePixelRatio, 1);
+    this.pixelRatio = Math.min(window.devicePixelRatio, 0.5);
     this.bloomDownscaleFactor = 0.75;
     this.maxFps = 60;
     this.frameInterval = 1 / this.maxFps;
