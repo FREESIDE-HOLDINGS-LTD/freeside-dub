@@ -324,7 +324,7 @@ button:active {
   left: 50%;
   z-index: 11;
   width: min(920px, calc(100vw - 4rem));
-  aspect-ratio: 5 / 3;
+  aspect-ratio: var(--boot-terminal-aspect-ratio, 5 / 3);
   pointer-events: none;
   opacity: 0;
   visibility: hidden;
@@ -375,10 +375,10 @@ button:active {
 
 .startup-terminal__viewport {
   position: absolute;
-  top: 48px;
-  left: 4px;
-  right: 20px;
-  bottom: 2px;
+  top: var(--boot-terminal-content-top, 48px);
+  left: var(--boot-terminal-content-left, 4px);
+  right: var(--boot-terminal-content-right, 20px);
+  bottom: var(--boot-terminal-content-bottom, 2px);
   overflow: hidden;
 }
 
@@ -397,10 +397,10 @@ button:active {
 }
 
 .startup-terminal__line {
-  color: #c9c9c9;
-  font-family: Consolas, 'Lucida Console', 'Courier New', monospace;
-  font-size: clamp(11px, 1.05vw, 17px);
-  line-height: 1.2;
+  color: var(--boot-terminal-color, #c9c9c9);
+  font-family: var(--boot-terminal-font-family, Consolas, 'Lucida Console', 'Courier New', monospace);
+  font-size: var(--boot-terminal-font-size, clamp(11px, 1.05vw, 17px));
+  line-height: var(--boot-terminal-line-height, 1.2);
   letter-spacing: 0;
   white-space: pre;
   text-shadow: none;
@@ -432,17 +432,5 @@ button:active {
 
   .startup-terminal {
     width: min(96vw, 700px);
-  }
-
-  .startup-terminal__viewport {
-    top: 52px;
-    left: 22px;
-    right: 16px;
-    bottom: 18px;
-    padding: 6px 8px 8px;
-  }
-
-  .startup-terminal__line {
-    font-size: clamp(9px, 1.8vw, 13px);
   }
 }
