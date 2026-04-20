@@ -44,9 +44,13 @@ export class SpaceStationScene {
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       alpha: false,
-      powerPreference: 'high-performance',
+      powerPreference: 'low-power',
     });
-    this.pixelRatio = Math.min(window.devicePixelRatio, 1.5);
+    this.pixelRatio = Math.min(window.devicePixelRatio, 1);
+    this.bloomScale = 0.75;
+    this.maxFps = 60;
+    this.frameInterval = 1 / this.maxFps;
+    this.accumulatedDt = 0;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -64,7 +68,12 @@ export class SpaceStationScene {
     );
     this.composer.addPass(this.fxaaPass);*/
 
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.62, 0.55, 0.52);
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth * this.bloomScale, window.innerHeight * this.bloomScale),
+      0.62,
+      0.55,
+      0.52,
+    );
     this.bloomPass.threshold = 0.08;
     this.composer.addPass(this.bloomPass);
 
@@ -552,7 +561,7 @@ export class SpaceStationScene {
       1 / (window.innerWidth * this.pixelRatio),
       1 / (window.innerHeight * this.pixelRatio),
     );*/
-    this.bloomPass.setSize(window.innerWidth, window.innerHeight);
+    this.bloomPass.setSize(window.innerWidth * this.bloomScale, window.innerHeight * this.bloomScale);
   }
 
   updateCamera(time) {
@@ -681,10 +690,15 @@ export class SpaceStationScene {
 
   update() {
     const dt = this.clock.getDelta();
+    this.accumulatedDt += dt;
+    if (this.accumulatedDt < this.frameInterval) return;
+
+    const frameDt = this.accumulatedDt;
+    this.accumulatedDt = 0;
     const time = this.clock.getElapsedTime();
 
     this.updateCamera(time);
-    this.updateStationMotion(time, dt);
+    this.updateStationMotion(time, frameDt);
     this.updateStationStyling(time);
     this.updatePostProcessing(time);
     this.updateTelemetryHud(time);
