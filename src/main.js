@@ -281,8 +281,8 @@ async function init() {
 
   new FaviconCycler().start();
 
-  scene = new SpaceStationScene(canvasContainer);
   const runtimeProfile = buildRuntimeProfile();
+  scene = new SpaceStationScene(canvasContainer, { bootTerminalOs: runtimeProfile.operatingSystem });
   setMode(modeLabel, 'Deep space telemetry');
   setStatus(statusLabel, 'Polling uplink');
 
@@ -315,6 +315,7 @@ async function init() {
       lastTime = performance.now();
       uiOverlay.classList.add('hidden');
       scene.setTelemetryVisible(true);
+      scene.enableBootTerminalHotkeys();
       setTimeout(() => scene.playStartupTerminal(), 1000);
 
       events.state.distortion = 1.4;

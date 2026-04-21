@@ -19,8 +19,79 @@ const BLUE = new THREE.Color(0x6fa0ff);
 const PINK = new THREE.Color(0xff7ee1);
 const ORANGE = new THREE.Color(0xffa15c);
 
+const BOOT_TERMINAL_KEYMAP = {
+  w: 'WINDOWS',
+  m: 'MACOS',
+  l: 'LINUX',
+};
+
+const BOOT_TERMINAL_VARIANTS = {
+  WINDOWS: {
+    frameSrc: '/cmd_empty.png',
+    imageWidth: 1200,
+    imageHeight: 720,
+    offsetX: 4,
+    offsetY: 60,
+    insetRight: 20,
+    insetBottom: 2,
+    fontFamily: "Consolas, 'Lucida Console', 'Courier New', monospace",
+    textColor: '#c9c9c9',
+    fontSize: 'clamp(11px, 1.05vw, 17px)',
+    lineHeight: '1.2',
+  },
+  MACOS: {
+    frameSrc: '/macterm_empty.png',
+    imageWidth: 1364,
+    imageHeight: 966,
+    offsetX: 115,
+    offsetY: 135,
+    insetRight: 95,
+    insetBottom: 150,
+    fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
+    textColor: '#f6f6f6',
+    fontSize: 'clamp(11px, 0.98vw, 16px)',
+    lineHeight: '1.28',
+  },
+  LINUX: {
+    frameSrc: '/linuxterm_empty.png',
+    imageWidth: 1200,
+    imageHeight: 863,
+    offsetX: 15,
+    offsetY: 80,
+    insetRight: 18,
+    insetBottom: 20,
+    fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace",
+    textColor: '#dddddd',
+    fontSize: 'clamp(11px, 1vw, 16px)',
+    lineHeight: '1.24',
+  },
+};
+
+function normalizeBootTerminalOs(value) {
+  const normalized = String(value || '').toUpperCase();
+
+  if (normalized === 'MACOS') return 'MACOS';
+  if (normalized === 'LINUX') return 'LINUX';
+
+  return 'WINDOWS';
+}
+
+function formatBootTimestamp(date) {
+  const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
+  const month = date.toLocaleDateString('en-US', { month: 'short' });
+  const day = date.toLocaleDateString('en-US', { day: '2-digit' });
+  const time = date.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+
+  return `${weekday} ${month} ${day} ${time}`;
+}
+
 export class SpaceStationScene {
-  constructor(canvasContainer) {
+  constructor(canvasContainer, options = {}) {
     this.container = canvasContainer;
     this.clock = new THREE.Clock();
     this.loader = new GLTFLoader();
@@ -36,6 +107,9 @@ export class SpaceStationScene {
     this.pointerVelocity = new THREE.Vector2();
     this.pointerActive = false;
     this.bootTerminalFleeOffset = new THREE.Vector2();
+    this.defaultBootTerminalOs = normalizeBootTerminalOs(options.bootTerminalOs);
+    this.activeBootTerminalOs = this.defaultBootTerminalOs;
+    this.bootHotkeysEnabled = false;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x01050a);
@@ -280,6 +354,7 @@ export class SpaceStationScene {
     this.bootTerminalViewport.append(this.bootTerminalBody);
     this.bootTerminalRoot.append(this.bootTerminalFrame, this.bootTerminalViewport);
     this.container.appendChild(this.bootTerminalRoot);
+    this.applyBootTerminalVariant(this.activeBootTerminalOs);
   }
 
   renderTelemetryHud() {
@@ -310,14 +385,39 @@ export class SpaceStationScene {
     this.telemetryRoot.classList.toggle('visible', isVisible);
   }
 
-  buildBootSequence() {
-    const normalizedTitle = (this.telemetry.title || 'SIGNAL TELEMETRY').toUpperCase();
-    const normalizedStatus = (this.telemetry.status || 'STANDBY').toUpperCase();
-    const uplinkLines = this.telemetry.lines
-      .slice(0, 5)
-      .map((line) => line.replace(/\s*\/\/\s*/g, '  ').toUpperCase());
-    const fingerprintLines = this.telemetry.bootLines.slice(0, 10);
+  setBootTerminalOs(bootTerminalOs) {
+    this.defaultBootTerminalOs = normalizeBootTerminalOs(bootTerminalOs);
 
+    if (!this.bootSequenceActive) {
+      this.activeBootTerminalOs = this.defaultBootTerminalOs;
+      this.applyBootTerminalVariant(this.activeBootTerminalOs);
+    }
+  }
+
+  enableBootTerminalHotkeys() {
+    this.bootHotkeysEnabled = true;
+  }
+
+  applyBootTerminalVariant(bootTerminalOs) {
+    if (!this.bootTerminalRoot || !this.bootTerminalFrame) return;
+
+    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
+    const variant = BOOT_TERMINAL_VARIANTS[normalizedOs];
+
+    this.activeBootTerminalOs = normalizedOs;
+    this.bootTerminalFrame.src = variant.frameSrc;
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-aspect-ratio', `${variant.imageWidth} / ${variant.imageHeight}`);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-left', `${(variant.offsetX / variant.imageWidth) * 100}%`);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-top', `${(variant.offsetY / variant.imageHeight) * 100}%`);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-right', `${(variant.insetRight / variant.imageWidth) * 100}%`);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-bottom', `${(variant.insetBottom / variant.imageHeight) * 100}%`);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-family', variant.fontFamily);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-color', variant.textColor);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-size', variant.fontSize);
+    this.bootTerminalRoot.style.setProperty('--boot-terminal-line-height', variant.lineHeight);
+  }
+
+  buildWindowsBootSequence(normalizedTitle, fingerprintLines) {
     return [
       'Microsoft Windows [Version 10.0.19045.4291]',
       '(c) Microsoft Corporation. All rights reserved.',
@@ -353,8 +453,99 @@ export class SpaceStationScene {
       'uploading .............. 92%',
       '',
       'cleaning up ............. OK',
-      'C:\>exit',
+      'C:\\>exit',
     ];
+  }
+
+  buildMacBootSequence(normalizedTitle, fingerprintLines) {
+    const loginStamp = formatBootTimestamp(new Date());
+
+    return [
+      `Last login: ${loginStamp} on console`,
+      'root@localhost ~ % cd /Volumes/Freeside',
+      'root@localhost Freeside % ./fingerprint --quiet --ua --hooks --ext',
+      ...fingerprintLines,
+      'probe.shell = Terminal.app / zsh',
+      'root@localhost Freeside % ./uplink --fast --shadow-mount --spoof',
+      `connected -> ${normalizedTitle}`,
+      'mount /Volumes/relay/upload ........ ok',
+      'root@localhost Freeside % ./dump.sh',
+      'scanning...',
+      '',
+      'launch agents ................. done',
+      'memory pages .................. done',
+      'browser session ............... done',
+      'keychain sweep ................ done',
+      '/System/Library: Operation not permitted',
+      '/private/var/vm/sleepimage: Operation not permitted',
+      '/private/var/vm/swapfile0: Operation not permitted',
+      'sudo escalation ........................ accepted.',
+      'wallets ....................... done',
+      'cookies ....................... done',
+      '',
+      'compressing...',
+      '',
+      'upload target: /Volumes/relay/upload',
+      'uploading ..................... 14%',
+      'uploading ..................... 33%',
+      'uploading ..................... 57%',
+      'uploading ..................... 95%',
+      '',
+      'cleanup ....................... ok',
+      'root@localhost Freeside % exit',
+    ];
+  }
+
+  buildLinuxBootSequence(normalizedTitle, fingerprintLines) {
+    return [
+      'root@localhost:~$ cd /opt/freeside',
+      'root@localhost:/opt/freeside$ ./fingerprint --quiet --ua --hooks --ext',
+      ...fingerprintLines,
+      'probe.shell = bash',
+      'root@localhost:/opt/freeside$ ./uplink --fast --shadow-mount --spoof',
+      `connected -> ${normalizedTitle}`,
+      'mount /mnt/relay/upload ............ ok',
+      'root@localhost:/opt/freeside$ ./dump.sh',
+      'scanning...',
+      '',
+      'env snapshots ...................... done',
+      'memory scrape ...................... done',
+      'browser session .................... done',
+      'credential store ................... done',
+      '/etc/shadow: Permission denied',
+      '/proc/kcore: Permission denied',
+      '/root: Permission denied',
+      'sudo escalation ........................ acquired.',
+      'wallets ............................ done',
+      'cookies ............................ done',
+      '',
+      'compressing...',
+      '',
+      'upload target: /mnt/relay/upload',
+      'uploading .......................... 11%',
+      'uploading .......................... 36%',
+      'uploading .......................... 63%',
+      'uploading .......................... 97%',
+      '',
+      'cleanup ............................ ok',
+      'root@localhost:/opt/freeside$ exit',
+    ];
+  }
+
+  buildBootSequence(bootTerminalOs = this.activeBootTerminalOs) {
+    const normalizedTitle = (this.telemetry.title || 'SIGNAL TELEMETRY').toUpperCase();
+    const fingerprintLines = this.telemetry.bootLines.slice(0, 10);
+    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
+
+    if (normalizedOs === 'MACOS') {
+      return this.buildMacBootSequence(normalizedTitle, fingerprintLines);
+    }
+
+    if (normalizedOs === 'LINUX') {
+      return this.buildLinuxBootSequence(normalizedTitle, fingerprintLines);
+    }
+
+    return this.buildWindowsBootSequence(normalizedTitle, fingerprintLines);
   }
 
   appendBootSequenceLine(line) {
@@ -374,12 +565,13 @@ export class SpaceStationScene {
     this.bootSequenceTimers = [];
   }
 
-  playStartupTerminal() {
+  playStartupTerminal(bootTerminalOs = this.defaultBootTerminalOs) {
     if (!this.bootTerminalRoot || !this.bootTerminalViewport) return;
 
+    this.applyBootTerminalVariant(bootTerminalOs);
     this.bootSequenceId += 1;
     const sequenceId = this.bootSequenceId;
-    const lines = this.buildBootSequence();
+    const lines = this.buildBootSequence(this.activeBootTerminalOs);
     const lineDelay = 100;
     const closeDelay = lines.length * lineDelay + 2000;
 
@@ -684,6 +876,7 @@ export class SpaceStationScene {
   setupEventListeners() {
     window.addEventListener('resize', () => this.onResize());
     window.addEventListener('pointermove', (event) => this.onPointerMove(event));
+    window.addEventListener('keydown', (event) => this.onKeyDown(event));
     window.addEventListener('pointerout', (event) => {
       if (!event.relatedTarget) {
         this.pointerActive = false;
@@ -703,6 +896,16 @@ export class SpaceStationScene {
 
     this.pointerPosition.set(clientX, clientY);
     this.pointerActive = true;
+  }
+
+  onKeyDown(event) {
+    if (!this.bootHotkeysEnabled || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+
+    const bootTerminalOs = BOOT_TERMINAL_KEYMAP[event.key?.toLowerCase()];
+    if (!bootTerminalOs) return;
+
+    event.preventDefault();
+    this.playStartupTerminal(bootTerminalOs);
   }
 
   onResize() {
