@@ -8,6 +8,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 //import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { grainShader } from './grain.js';
+import { TerminalWindow, normalizeTerminalOs } from './terminal.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const WORLD_RIGHT = new THREE.Vector3(1, 0, 0);
@@ -24,57 +25,6 @@ const BOOT_TERMINAL_KEYMAP = {
   m: 'MACOS',
   l: 'LINUX',
 };
-
-const BOOT_TERMINAL_VARIANTS = {
-  WINDOWS: {
-    frameSrc: '/cmd_empty.png',
-    imageWidth: 1200,
-    imageHeight: 720,
-    offsetX: 4,
-    offsetY: 60,
-    insetRight: 20,
-    insetBottom: 2,
-    fontFamily: "Consolas, 'Lucida Console', 'Courier New', monospace",
-    textColor: '#c9c9c9',
-    fontSize: 'clamp(11px, 1.05vw, 17px)',
-    lineHeight: '1.2',
-  },
-  MACOS: {
-    frameSrc: '/macterm_empty.png',
-    imageWidth: 1364,
-    imageHeight: 966,
-    offsetX: 115,
-    offsetY: 135,
-    insetRight: 95,
-    insetBottom: 150,
-    fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
-    textColor: '#f6f6f6',
-    fontSize: 'clamp(11px, 0.98vw, 16px)',
-    lineHeight: '1.28',
-  },
-  LINUX: {
-    frameSrc: '/linuxterm_empty.png',
-    imageWidth: 1200,
-    imageHeight: 863,
-    offsetX: 15,
-    offsetY: 80,
-    insetRight: 18,
-    insetBottom: 20,
-    fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace",
-    textColor: '#dddddd',
-    fontSize: 'clamp(11px, 1vw, 16px)',
-    lineHeight: '1.24',
-  },
-};
-
-function normalizeBootTerminalOs(value) {
-  const normalized = String(value || '').toUpperCase();
-
-  if (normalized === 'MACOS') return 'MACOS';
-  if (normalized === 'LINUX') return 'LINUX';
-
-  return 'WINDOWS';
-}
 
 function formatBootTimestamp(date) {
   const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
@@ -100,16 +50,15 @@ export class SpaceStationScene {
       status: 'STANDBY',
       lines: [],
     };
-    this.bootSequenceActive = false;
-    this.bootSequenceId = 0;
-    this.bootSequenceTimers = [];
     this.pointerPosition = new THREE.Vector2(window.innerWidth * 0.5, window.innerHeight * 0.5);
     this.pointerVelocity = new THREE.Vector2();
     this.pointerActive = false;
-    this.bootTerminalFleeOffset = new THREE.Vector2();
-    this.defaultBootTerminalOs = normalizeBootTerminalOs(options.bootTerminalOs);
-    this.activeBootTerminalOs = this.defaultBootTerminalOs;
+    this.defaultBootTerminalOs = normalizeTerminalOs(options.bootTerminalOs);
     this.bootHotkeysEnabled = false;
+    this.terminals = [];
+    this.commandTerminal = null;
+    this.nextTerminalSerial = 0;
+    this.nextTerminalZIndex = 20;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x01050a);
@@ -237,7 +186,6 @@ export class SpaceStationScene {
     this.setupLighting();
     this.createBackground();
     this.createTelemetryHud();
-    this.createBootSequenceOverlay();
     this.loadStationModel();
     this.setupEventListeners();
 
@@ -335,28 +283,6 @@ export class SpaceStationScene {
     this.renderTelemetryHud();
   }
 
-  createBootSequenceOverlay() {
-    this.bootTerminalRoot = document.createElement('div');
-    this.bootTerminalRoot.className = 'startup-terminal hidden';
-    this.bootTerminalRoot.setAttribute('aria-hidden', 'true');
-
-    this.bootTerminalFrame = document.createElement('img');
-    this.bootTerminalFrame.className = 'startup-terminal__frame';
-    this.bootTerminalFrame.src = '/cmd_empty.png';
-    this.bootTerminalFrame.alt = '';
-
-    this.bootTerminalViewport = document.createElement('div');
-    this.bootTerminalViewport.className = 'startup-terminal__viewport';
-
-    this.bootTerminalBody = document.createElement('div');
-    this.bootTerminalBody.className = 'startup-terminal__body';
-
-    this.bootTerminalViewport.append(this.bootTerminalBody);
-    this.bootTerminalRoot.append(this.bootTerminalFrame, this.bootTerminalViewport);
-    this.container.appendChild(this.bootTerminalRoot);
-    this.applyBootTerminalVariant(this.activeBootTerminalOs);
-  }
-
   renderTelemetryHud() {
     this.telemetryTitle.textContent = this.telemetry.title;
     this.telemetryStatus.textContent = this.telemetry.status;
@@ -390,11 +316,10 @@ export class SpaceStationScene {
   }
 
   setBootTerminalOs(bootTerminalOs) {
-    this.defaultBootTerminalOs = normalizeBootTerminalOs(bootTerminalOs);
+    this.defaultBootTerminalOs = normalizeTerminalOs(bootTerminalOs);
 
-    if (!this.bootSequenceActive) {
-      this.activeBootTerminalOs = this.defaultBootTerminalOs;
-      this.applyBootTerminalVariant(this.activeBootTerminalOs);
+    if (this.commandTerminal && !this.commandTerminal.destroyed) {
+      this.commandTerminal.applyVariant(this.defaultBootTerminalOs);
     }
   }
 
@@ -402,144 +327,246 @@ export class SpaceStationScene {
     this.bootHotkeysEnabled = true;
   }
 
-  applyBootTerminalVariant(bootTerminalOs) {
-    if (!this.bootTerminalRoot || !this.bootTerminalFrame) return;
+  bringTerminalToFront(terminal) {
+    if (!terminal || terminal.destroyed) return;
+    terminal.setZIndex(this.nextTerminalZIndex);
+    this.nextTerminalZIndex += 1;
+  }
 
-    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
-    const variant = BOOT_TERMINAL_VARIANTS[normalizedOs];
+  unregisterTerminal(terminal) {
+    this.terminals = this.terminals.filter((entry) => entry !== terminal);
 
-    this.activeBootTerminalOs = normalizedOs;
-    this.bootTerminalFrame.src = variant.frameSrc;
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-aspect-ratio', `${variant.imageWidth} / ${variant.imageHeight}`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-left', `${(variant.offsetX / variant.imageWidth) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-top', `${(variant.offsetY / variant.imageHeight) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-right', `${(variant.insetRight / variant.imageWidth) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-bottom', `${(variant.insetBottom / variant.imageHeight) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-family', variant.fontFamily);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-color', variant.textColor);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-size', variant.fontSize);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-line-height', variant.lineHeight);
+    if (this.commandTerminal === terminal) {
+      this.commandTerminal = null;
+    }
+  }
+
+  getTerminalSpawnOffset(kind = 'boot') {
+    const serial = this.nextTerminalSerial;
+    this.nextTerminalSerial += 1;
+
+    if (kind === 'command') {
+      return {
+        x: Math.min(220, window.innerWidth * 0.18),
+        y: Math.min(120, window.innerHeight * 0.12),
+      };
+    }
+
+    const column = serial % 3;
+    const row = Math.floor(serial / 3) % 3;
+
+    return {
+      x: (column - 1) * 58,
+      y: (row - 1) * 46,
+    };
+  }
+
+  createTerminal(options = {}) {
+    const spawnOffset = Number.isFinite(options.baseOffsetX) && Number.isFinite(options.baseOffsetY)
+      ? { x: options.baseOffsetX, y: options.baseOffsetY }
+      : this.getTerminalSpawnOffset(options.kind);
+    const offset = {
+      x: Number.isFinite(options.baseOffsetX) ? options.baseOffsetX : spawnOffset.x,
+      y: Number.isFinite(options.baseOffsetY) ? options.baseOffsetY : spawnOffset.y,
+    };
+
+    const terminal = new TerminalWindow(this.container, {
+      ...options,
+      os: normalizeTerminalOs(options.os || this.defaultBootTerminalOs),
+      baseOffsetX: offset.x,
+      baseOffsetY: offset.y,
+      onFocus: (instance) => this.bringTerminalToFront(instance),
+      onDestroy: (instance) => this.unregisterTerminal(instance),
+    });
+
+    this.terminals.push(terminal);
+    this.bringTerminalToFront(terminal);
+
+    return terminal;
+  }
+
+  createCommandTerminal() {
+    const offset = this.getTerminalSpawnOffset('command');
+    const terminal = this.createTerminal({
+      kind: 'command',
+      os: this.defaultBootTerminalOs,
+      draggable: true,
+      interactive: true,
+      showCursor: true,
+      wobbleScale: 0.3,
+      baseOffsetX: offset.x,
+      baseOffsetY: offset.y,
+      onCommand: (command) => this.handleCommandTerminalCommand(command),
+    });
+
+    terminal.root.classList.add('system-terminal--command');
+    terminal.appendResponse([
+      'Freeside command relay online.',
+      'Try: hello',
+      '',
+    ]);
+
+    this.commandTerminal = terminal;
+    return terminal;
+  }
+
+  toggleCommandTerminal() {
+    if (!this.commandTerminal || this.commandTerminal.destroyed) {
+      this.createCommandTerminal();
+    }
+
+    if (this.commandTerminal.visible || this.commandTerminal.closing) {
+      this.commandTerminal.hide();
+      return;
+    }
+
+    this.commandTerminal.applyVariant(this.defaultBootTerminalOs);
+    this.commandTerminal.open();
+    this.bringTerminalToFront(this.commandTerminal);
+  }
+
+  handleCommandTerminalCommand(command) {
+    const normalized = command.trim().toLowerCase();
+
+    if (normalized === 'hello' || normalized === 'hello world') {
+      return 'Hello, world.';
+    }
+
+    return [
+      `Unknown command: ${command}`,
+      'Available commands: hello',
+    ];
   }
 
   buildWindowsBootSequence(normalizedTitle, fingerprintLines) {
+    const fingerprintBlock = fingerprintLines.length ? `${fingerprintLines.join('\n')}\n` : '';
+
     return [
-      'Microsoft Windows [Version 10.0.19045.4291]',
-      '(c) Microsoft Corporation. All rights reserved.',
-      '',
-      'C:\\>cd Windows\\freeside',
-      'C:\\Windows\\freeside>',
-      'C:\\Windows\\freeside>fingerprint.exe /quiet /ua /hooks /ext',
-      ...fingerprintLines,
-      'Probe   browser shell ........ slightly cursed',
-      'C:\\Windows\\freeside>uplink.exe /fast /shadowMount /spoof',
+      `Microsoft Windows [Version 10.0.19045.4291]`,
+      `(c) Microsoft Corporation. All rights reserved.`,
+      { pause: 220 },
+      `C:\\>cd Windows\\freeside`,
+      `C:\\Windows\\freeside>`,
+      `C:\\Windows\\freeside>fingerprint.exe /quiet /ua /hooks /ext`,
+      fingerprintBlock,
+      `Probe   browser shell ........ slightly cursed`,
+      { pause: 260 },
+      `C:\\Windows\\freeside>uplink.exe /fast /shadowMount /spoof`,
       `Connected to ${normalizedTitle}`,
-      'Mount   \\\\.\\relay\\upload ...... OK',
-      'C:\\Windows\\freeside>dump.bat',
-      'scanning...',
-      '',
-      'envs ................... DONE',
-      'mem dump ............... DONE',
-      'browser session ........ DONE',
-      'system keyring ......... DONE',
-      'Access denied - C:\\Windows\\pagefile.sys',
-      'Access denied - C:\\Windows\\swapfile.sys',
-      'Access denied - C:\\Windows\\system32',
-      'elevating to SYSTEM .................... nailed it.',
-      'wallets ................ DONE',
-      'cookies ................ DONE',
-      '',
-      'zipping...',
-      '',
-      'upload target: \\\\.\\relay\\upload',
-      'uploading .............. 12%',
-      'uploading .............. 29%',
-      'uploading .............. 51%',
-      'uploading .............. 92%',
-      '',
-      'cleaning up ............. OK',
-      'C:\\>exit',
-    ];
+      `Mount   \\\\.\\relay\\upload ...... OK`,
+      { pause: 180 },
+      [
+        `C:\\Windows\\freeside>dump.bat`,
+        `scanning...`,
+        { pause: 320 },
+        `envs ...................DONE`,
+        `mem dump ...............DONE`,
+        `browser session ........DONE`,
+        `system keyring .........DONE`,
+        `Access denied - C:\\Windows\\pagefile.sys`,
+        `Access denied - C:\\Windows\\swapfile.sys`,
+        `Access denied - C:\\Windows\\system32`,
+        `elevating to SYSTEM ....................nailed it.`,
+        `wallets ................DONE`,
+        `cookies ................DONE`,
+        { pause: 320 },
+        `zipping...`,
+        { pause: 260 },
+        `upload target: \\\\.\\relay\\upload`,
+        `uploading .............. 12 % `,
+        `uploading .............. 29 % `,
+        `uploading .............. 51 % `,
+        `uploading .............. 92 % `,
+        `cleaning up .............OK`,
+        `C:\\> exit`,
+      ].flat(),
+    ].flat();
   }
 
   buildMacBootSequence(normalizedTitle, fingerprintLines) {
     const loginStamp = formatBootTimestamp(new Date());
+    const fingerprintBlock = fingerprintLines.length ? `${fingerprintLines.join('\n')}\n` : '';
 
     return [
       `Last login: ${loginStamp} on console`,
-      'root@localhost ~ % cd /Volumes/Freeside',
-      'root@localhost Freeside % ./fingerprint --quiet --ua --hooks --ext',
-      ...fingerprintLines,
-      'probe.shell = Terminal.app / zsh',
-      'root@localhost Freeside % ./uplink --fast --shadow-mount --spoof',
+      `root@localhost ~ % cd /Volumes/Freeside`,
+      `root@localhost Freeside % ./fingerprint --quiet --ua --hooks --ext`,
+      fingerprintBlock,
+      `probe.shell = Terminal.app / zsh`,
+      { pause: 240 },
+      `root@localhost Freeside % ./uplink --fast --shadow-mount --spoof`,
       `connected -> ${normalizedTitle}`,
-      'mount /Volumes/relay/upload ........ ok',
-      'root@localhost Freeside % ./dump.sh',
-      'scanning...',
-      '',
-      'launch agents ................. done',
-      'memory pages .................. done',
-      'browser session ............... done',
-      'keychain sweep ................ done',
-      '/System/Library: Operation not permitted',
-      '/private/var/vm/sleepimage: Operation not permitted',
-      '/private/var/vm/swapfile0: Operation not permitted',
-      'sudo escalation ........................ accepted.',
-      'wallets ....................... done',
-      'cookies ....................... done',
-      '',
+      `mount /Volumes/relay/upload ........ok`,
+      { pause: 180 },
+      `root@localhost Freeside % ./dump.sh`,
+      `scanning...`,
+      { pause: 320 },
+      `launch agents .................done`,
+      `memory pages ..................done`,
+      `browser session ...............done`,
+      `keychain sweep ................done`,
+      `/System/Library: Operation not permitted`,
+      `/private/var/vm/sleepimage: Operation not permitted`,
+      `/private/var/vm/swapfile0: Operation not permitted`,
+      `sudo escalation ........................accepted.`,
+      `wallets .......................done`,
+      `cookies .......................done`,
+      { pause: 320 },
       'compressing...',
-      '',
+      { pause: 260 },
       'upload target: /Volumes/relay/upload',
       'uploading ..................... 14%',
       'uploading ..................... 33%',
       'uploading ..................... 57%',
-      'uploading ..................... 95%',
-      '',
+      'uploading ..................... 95%\n',
       'cleanup ....................... ok',
       'root@localhost Freeside % exit',
     ];
   }
 
   buildLinuxBootSequence(normalizedTitle, fingerprintLines) {
+    const fingerprintBlock = fingerprintLines.length ? `${fingerprintLines.join('\n')} \n` : '';
+
     return [
-      'root@localhost:~$ cd /opt/freeside',
-      'root@localhost:/opt/freeside$ ./fingerprint --quiet --ua --hooks --ext',
-      ...fingerprintLines,
-      'probe.shell = bash',
-      'root@localhost:/opt/freeside$ ./uplink --fast --shadow-mount --spoof',
+      `root@localhost:~$ cd /opt/freeside/`,
+      `root@localhost:/opt/freeside$ ./fingerprint --quiet --ua --hooks --ext`,
+      fingerprintBlock,
+      `probe.shell = bash`,
+      { pause: 240 },
+      `root@localhost:/opt/freeside$ ./uplink --fast --shadow-mount --spoof`,
       `connected -> ${normalizedTitle}`,
-      'mount /mnt/relay/upload ............ ok',
-      'root@localhost:/opt/freeside$ ./dump.sh',
-      'scanning...',
-      '',
-      'env snapshots ...................... done',
-      'memory scrape ...................... done',
-      'browser session .................... done',
-      'credential store ................... done',
-      '/etc/shadow: Permission denied',
-      '/proc/kcore: Permission denied',
-      '/root: Permission denied',
-      'sudo escalation ........................ acquired.',
-      'wallets ............................ done',
-      'cookies ............................ done',
-      '',
-      'compressing...',
-      '',
-      'upload target: /mnt/relay/upload',
-      'uploading .......................... 11%',
-      'uploading .......................... 36%',
-      'uploading .......................... 63%',
-      'uploading .......................... 97%',
-      '',
-      'cleanup ............................ ok',
-      'root@localhost:/opt/freeside$ exit',
+      `mount / mnt / relay / upload ............ok`,
+      { pause: 180 },
+      `root@localhost:/opt/freeside$ ./dump.sh`,
+      `scanning...`,
+      { pause: 320 },
+      `env snapshots ...................... done`,
+      `memory scrape ...................... done`,
+      `browser session .................... done`,
+      `credential store ................... done`,
+      `/etc/shadow: Permission denied`,
+      `/proc/kcore: Permission denied`,
+      `/root: Permission denied`,
+      `sudo escalation ........................ acquired.`,
+      `wallets ............................ done`,
+      `cookies ............................ done`,
+      { pause: 320 },
+      `compressing...`,
+      { pause: 260 },
+      `upload target: /mnt/relay/upload`,
+      `uploading .......................... 11%`,
+      `uploading .......................... 36%`,
+      `uploading .......................... 63%`,
+      `uploading .......................... 97%`,
+      `cleanup ............................ ok`,
+      `root@localhost:/opt/freeside$ exit`,
     ];
   }
 
-  buildBootSequence(bootTerminalOs = this.activeBootTerminalOs) {
+  buildBootSequence(bootTerminalOs = this.defaultBootTerminalOs) {
     const normalizedTitle = (this.telemetry.title || 'SIGNAL TELEMETRY').toUpperCase();
     const fingerprintLines = this.telemetry.bootLines.slice(0, 10);
-    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
+    const normalizedOs = normalizeTerminalOs(bootTerminalOs);
 
     if (normalizedOs === 'MACOS') {
       return this.buildMacBootSequence(normalizedTitle, fingerprintLines);
@@ -552,61 +579,22 @@ export class SpaceStationScene {
     return this.buildWindowsBootSequence(normalizedTitle, fingerprintLines);
   }
 
-  appendBootSequenceLine(line) {
-    const entry = document.createElement('div');
-    entry.className = 'startup-terminal__line';
-    entry.textContent = line;
-    this.bootTerminalBody.append(entry);
-
-    const maxScroll = Math.max(0, this.bootTerminalViewport.scrollHeight - this.bootTerminalViewport.clientHeight);
-    if (maxScroll > 0) {
-      this.bootTerminalViewport.scrollTop = maxScroll;
-    }
-  }
-
-  clearBootSequenceTimers() {
-    this.bootSequenceTimers.forEach((timerId) => window.clearTimeout(timerId));
-    this.bootSequenceTimers = [];
-  }
-
   playStartupTerminal(bootTerminalOs = this.defaultBootTerminalOs) {
-    if (!this.bootTerminalRoot || !this.bootTerminalViewport) return;
-
-    this.applyBootTerminalVariant(bootTerminalOs);
-    this.bootSequenceId += 1;
-    const sequenceId = this.bootSequenceId;
-    const lines = this.buildBootSequence(this.activeBootTerminalOs);
-    const lineDelay = 100;
-    const closeDelay = lines.length * lineDelay + 2000;
-
-    this.clearBootSequenceTimers();
-    this.bootTerminalBody.replaceChildren();
-    this.bootSequenceActive = true;
-    this.bootTerminalFleeOffset.set(0, 0);
-    this.bootTerminalViewport.scrollTop = 0;
-    this.bootTerminalRoot.classList.remove('hidden', 'closing');
-    this.bootTerminalRoot.classList.add('visible');
-
-    lines.forEach((line, index) => {
-      const timerId = window.setTimeout(() => {
-        if (this.bootSequenceId !== sequenceId) return;
-        this.appendBootSequenceLine(line);
-      }, index * lineDelay);
-      this.bootSequenceTimers.push(timerId);
+    const terminal = this.createTerminal({
+      kind: 'boot',
+      os: bootTerminalOs,
+      draggable: false,
+      interactive: false,
+      showCursor: false,
+      wobbleScale: 1,
     });
 
-    this.bootSequenceTimers.push(window.setTimeout(() => {
-      if (this.bootSequenceId !== sequenceId) return;
-      this.bootTerminalRoot.classList.add('closing');
-    }, closeDelay));
-
-    this.bootSequenceTimers.push(window.setTimeout(() => {
-      if (this.bootSequenceId !== sequenceId) return;
-      this.bootSequenceActive = false;
-      this.bootTerminalRoot.classList.remove('visible', 'closing');
-      this.bootTerminalRoot.classList.add('hidden');
-      this.bootTerminalBody.replaceChildren();
-    }, closeDelay + 220));
+    terminal.root.classList.add('system-terminal--boot');
+    terminal.playScript(this.buildBootSequence(bootTerminalOs), {
+      lineDelay: 100,
+      autoCloseDelay: 2000,
+      destroyOnClose: true,
+    });
   }
 
   loadStationModel() {
@@ -902,10 +890,24 @@ export class SpaceStationScene {
     this.pointerActive = true;
   }
 
+  isTypingTarget(target) {
+    return target instanceof HTMLElement
+      && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+  }
+
   onKeyDown(event) {
     if (!this.bootHotkeysEnabled || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (this.isTypingTarget(event.target)) return;
 
-    const bootTerminalOs = BOOT_TERMINAL_KEYMAP[event.key?.toLowerCase()];
+    const key = event.key?.toLowerCase();
+
+    if (key === 'c') {
+      event.preventDefault();
+      this.toggleCommandTerminal();
+      return;
+    }
+
+    const bootTerminalOs = BOOT_TERMINAL_KEYMAP[key];
     if (!bootTerminalOs) return;
 
     event.preventDefault();
@@ -1040,10 +1042,10 @@ export class SpaceStationScene {
     const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
     const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
 
-    this.telemetryRoot.style.setProperty('--terminal-shift-x', `${xShift}px`);
-    this.telemetryRoot.style.setProperty('--terminal-shift-y', `${yShift}px`);
-    this.telemetryRoot.style.setProperty('--terminal-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
-    this.telemetryRoot.style.setProperty('--terminal-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
+    this.telemetryRoot.style.setProperty('--terminal-shift-x', `${xShift} px`);
+    this.telemetryRoot.style.setProperty('--terminal-shift-y', `${yShift} px`);
+    this.telemetryRoot.style.setProperty('--terminal-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08} `);
+    this.telemetryRoot.style.setProperty('--terminal-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2} `);
     this.telemetryRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
     this.telemetryStatus.style.color = events.state.bass_hit > 0.08 ? '#ff9f67' : '#ff7ee1';
   }
@@ -1054,67 +1056,29 @@ export class SpaceStationScene {
     const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
     const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
 
-    this.volumeControlRoot.style.setProperty('--volume-shift-x', `${xShift}px`);
-    this.volumeControlRoot.style.setProperty('--volume-shift-y', `${yShift}px`);
-    this.volumeControlRoot.style.setProperty('--volume-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
-    this.volumeControlRoot.style.setProperty('--volume-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
+    this.volumeControlRoot.style.setProperty('--volume-shift-x', `${xShift} px`);
+    this.volumeControlRoot.style.setProperty('--volume-shift-y', `${yShift} px`);
+    this.volumeControlRoot.style.setProperty('--volume-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08} `);
+    this.volumeControlRoot.style.setProperty('--volume-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2} `);
     this.volumeControlRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
   }
 
-  updateBootTerminal(time, dt) {
-    if (!this.bootTerminalRoot) return;
+  updateTerminals(time, dt) {
+    const pointerState = {
+      active: this.pointerActive,
+      position: {
+        x: this.pointerPosition.x,
+        y: this.pointerPosition.y,
+      },
+      velocity: {
+        x: this.pointerVelocity.x,
+        y: this.pointerVelocity.y,
+      },
+    };
 
-    if (!this.bootSequenceActive) {
-      this.bootTerminalFleeOffset.multiplyScalar(Math.max(0, 1 - dt * 6));
-      return;
-    }
-
-    const rect = this.bootTerminalRoot.getBoundingClientRect();
-    const centerX = rect.left + rect.width * 0.5;
-    const centerY = rect.top + rect.height * 0.5;
-    const awayX = centerX - this.pointerPosition.x;
-    const awayY = centerY - this.pointerPosition.y;
-    const distance = Math.hypot(awayX, awayY);
-    const speed = Math.hypot(this.pointerVelocity.x, this.pointerVelocity.y);
-    const radius = Math.max(rect.width, rect.height) * 0.78;
-    const isPointerInside = this.pointerPosition.x >= rect.left
-      && this.pointerPosition.x <= rect.right
-      && this.pointerPosition.y >= rect.top
-      && this.pointerPosition.y <= rect.bottom;
-    const proximity = THREE.MathUtils.clamp(1 - distance / radius, 0, 1);
-    const approach = speed > 0.001 && distance > 0.001
-      ? THREE.MathUtils.clamp((this.pointerVelocity.x * awayX + this.pointerVelocity.y * awayY) / (speed * distance), 0, 1)
-      : 0;
-    const threat = this.pointerActive
-      ? isPointerInside
-        ? 1
-        : proximity > 0 && (approach > 0.12 || distance < Math.min(rect.width, rect.height) * 0.32)
-          ? proximity * (0.55 + approach * 0.75)
-          : 0
-      : 0;
-    const maxTravelX = Math.max(0, window.innerWidth * 0.5 - rect.width * 0.58 - 28);
-    const maxTravelY = Math.max(0, window.innerHeight * 0.5 - rect.height * 0.58 - 28);
-    const directionX = distance > 0.001 ? awayX / distance : (this.pointerVelocity.x <= 0 ? 1 : -1);
-    const directionY = distance > 0.001 ? awayY / distance : (this.pointerVelocity.y <= 0 ? 1 : -1);
-    const rawTargetX = threat > 0 ? directionX * maxTravelX * Math.min(1, threat * 1.35) : this.bootTerminalFleeOffset.x;
-    const rawTargetY = threat > 0 ? directionY * maxTravelY * Math.min(1, threat * 1.05) : this.bootTerminalFleeOffset.y;
-    // Flee offset may only grow in magnitude — never drift back toward center
-    const targetOffsetX = threat > 0 && Math.abs(rawTargetX) < Math.abs(this.bootTerminalFleeOffset.x)
-      ? this.bootTerminalFleeOffset.x : rawTargetX;
-    const targetOffsetY = threat > 0 && Math.abs(rawTargetY) < Math.abs(this.bootTerminalFleeOffset.y)
-      ? this.bootTerminalFleeOffset.y : rawTargetY;
-    const evadeBlend = Math.min(1, dt * (threat > 0 ? 11 : 5));
-
-    this.bootTerminalFleeOffset.x = THREE.MathUtils.lerp(this.bootTerminalFleeOffset.x, targetOffsetX, evadeBlend);
-    this.bootTerminalFleeOffset.y = THREE.MathUtils.lerp(this.bootTerminalFleeOffset.y, targetOffsetY, evadeBlend);
-
-    const xShift = Math.sin(time * 18) * (1.2 + events.state.fringe * 6) + this.bootTerminalFleeOffset.x;
-    const yShift = Math.cos(time * 13) * (0.8 + events.state.distortion * 4) + this.bootTerminalFleeOffset.y;
-
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-shift-x', `${xShift.toFixed(2)}px`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-shift-y', `${yShift.toFixed(2)}px`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-opacity', `${0.96 - events.state.distortion * 0.08}`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-glow', `${0.08 + events.state.fringe * 0.12}`);
+    this.terminals.forEach((terminal) => {
+      terminal.update(time, dt, pointerState, events.state);
+    });
   }
 
   update() {
@@ -1132,7 +1096,7 @@ export class SpaceStationScene {
     this.updatePostProcessing(time);
     this.updateTelemetryHud(time);
     this.updateVolumeControl(time);
-    this.updateBootTerminal(time, frameDt);
+    this.updateTerminals(time, frameDt);
 
     this.composer.render();
   }
