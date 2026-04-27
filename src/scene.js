@@ -385,6 +385,10 @@ export class SpaceStationScene {
     this.telemetryRoot.classList.toggle('visible', isVisible);
   }
 
+  setVolumeControl(element) {
+    this.volumeControlRoot = element;
+  }
+
   setBootTerminalOs(bootTerminalOs) {
     this.defaultBootTerminalOs = normalizeBootTerminalOs(bootTerminalOs);
 
@@ -1044,6 +1048,19 @@ export class SpaceStationScene {
     this.telemetryStatus.style.color = events.state.bass_hit > 0.08 ? '#ff9f67' : '#ff7ee1';
   }
 
+  updateVolumeControl(time) {
+    if (!this.volumeControlRoot) return;
+
+    const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
+    const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
+
+    this.volumeControlRoot.style.setProperty('--volume-shift-x', `${xShift}px`);
+    this.volumeControlRoot.style.setProperty('--volume-shift-y', `${yShift}px`);
+    this.volumeControlRoot.style.setProperty('--volume-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
+    this.volumeControlRoot.style.setProperty('--volume-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
+    this.volumeControlRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
+  }
+
   updateBootTerminal(time, dt) {
     if (!this.bootTerminalRoot) return;
 
@@ -1114,6 +1131,7 @@ export class SpaceStationScene {
     this.updateStationStyling(time);
     this.updatePostProcessing(time);
     this.updateTelemetryHud(time);
+    this.updateVolumeControl(time);
     this.updateBootTerminal(time, frameDt);
 
     this.composer.render();
