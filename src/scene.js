@@ -1233,10 +1233,10 @@ export class SpaceStationScene {
     const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
     const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
 
-    this.telemetryRoot.style.setProperty('--terminal-shift-x', `${xShift} px`);
-    this.telemetryRoot.style.setProperty('--terminal-shift-y', `${yShift} px`);
-    this.telemetryRoot.style.setProperty('--terminal-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08} `);
-    this.telemetryRoot.style.setProperty('--terminal-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2} `);
+    this.telemetryRoot.style.setProperty('--terminal-shift-x', `${xShift}px`);
+    this.telemetryRoot.style.setProperty('--terminal-shift-y', `${yShift}px`);
+    this.telemetryRoot.style.setProperty('--terminal-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
+    this.telemetryRoot.style.setProperty('--terminal-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
     this.telemetryRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
     this.telemetryStatus.style.color = events.state.bass_hit > 0.08 ? '#ff9f67' : '#ff7ee1';
   }
@@ -1247,10 +1247,10 @@ export class SpaceStationScene {
     const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
     const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
 
-    this.volumeControlRoot.style.setProperty('--volume-shift-x', `${xShift} px`);
-    this.volumeControlRoot.style.setProperty('--volume-shift-y', `${yShift} px`);
-    this.volumeControlRoot.style.setProperty('--volume-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08} `);
-    this.volumeControlRoot.style.setProperty('--volume-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2} `);
+    this.volumeControlRoot.style.setProperty('--volume-shift-x', `${xShift}px`);
+    this.volumeControlRoot.style.setProperty('--volume-shift-y', `${yShift}px`);
+    this.volumeControlRoot.style.setProperty('--volume-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
+    this.volumeControlRoot.style.setProperty('--volume-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
     this.volumeControlRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
   }
 
