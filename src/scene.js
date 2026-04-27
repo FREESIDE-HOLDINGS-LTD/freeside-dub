@@ -29,8 +29,32 @@ const BOOT_TERMINAL_KEYMAP = {
 
 const EQ_TERMINAL_LABELS = ['32', '64', '125', '250', '500', '1k', '2k', '4k', '6k', '8k', '12k', '16k'];
 const WATERFALL_CHARSET = ' .:-=+*#%@';
+const CMATRIX_CHARSET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*+=-<>[]{}';
 const COMMAND_TOKEN_PATTERN = /"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+)/g;
-const COMMAND_TERMINAL_COMMANDS = ['anal', 'chsh', 'echo', 'eq', 'help'];
+const PREFIX_COMMANDS = ['./cmatrix', './freecam'];
+const COMMAND_TERMINAL_COMMANDS = [
+  './cmatrix',
+  './freecam',
+  'anal',
+  'chsh',
+  'clear',
+  'echo',
+  'eq',
+  'exit',
+  'help',
+  'ls',
+  'sh',
+];
+const FREECAM_MOVEMENT_KEYS = {
+  w: 'forward',
+  a: 'left',
+  s: 'backward',
+  d: 'right',
+};
+const FREECAM_MOUSE_SENSITIVITY = 0.0023;
+const FREECAM_MAX_PITCH = Math.PI * 0.48;
+const FREECAM_BASE_SPEED = 12;
+const FREECAM_BOOST_MULTIPLIER = 1.9;
 
 function formatBootTimestamp(date) {
   const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
@@ -238,6 +262,70 @@ function buildWaterfallFrame(state, options = {}) {
   };
 }
 
+function randomMatrixGlyph() {
+  return CMATRIX_CHARSET[Math.floor(Math.random() * CMATRIX_CHARSET.length)];
+}
+
+function resetMatrixColumn(column, height) {
+  column.head = -Math.floor(Math.random() * height);
+  column.length = 4 + Math.floor(Math.random() * 10);
+  column.speed = 7 + Math.random() * 12;
+}
+
+function buildMatrixFrame(state) {
+  const width = 44;
+  const height = 16;
+  const intensity = 0.85 + events.state.energy * 0.55 + events.state.shimmer * 0.22;
+
+  if (!Array.isArray(state.columns) || state.columns.length !== width) {
+    state.columns = Array.from({ length: width }, () => {
+      const column = {};
+      resetMatrixColumn(column, height);
+      column.head -= Math.floor(Math.random() * height * 1.5);
+      return column;
+    });
+  }
+
+  const step = Math.max(0.012, state.dt || 0.016);
+  state.columns.forEach((column) => {
+    column.head += column.speed * step * intensity;
+    if (column.head - column.length > height + 3) {
+      resetMatrixColumn(column, height);
+    }
+  });
+
+  const lines = [];
+  lines.push(escapeTerminalHtml('FREESIDE CMATRIX // NEURAL RAIN'));
+  lines.push(escapeTerminalHtml('SIGNAL LOCKED  //  PRESS ANY KEY TO EXIT'));
+  lines.push('');
+
+  for (let row = 0; row < height; row += 1) {
+    const cells = state.columns.map((column) => {
+      const distance = column.head - row;
+      if (distance < 0 || distance > column.length) return ' ';
+
+      const falloff = 1 - distance / Math.max(1, column.length);
+      const glyph = escapeTerminalHtml(randomMatrixGlyph());
+      if (distance < 0.85) {
+        return `<span style="color:hsl(136 100% 92%)">${glyph}</span>`;
+      }
+
+      const lightness = Math.round(24 + falloff * 46 + events.state.energy * 12);
+      const saturation = Math.round(78 + falloff * 18);
+      return `<span style="color:hsl(134 ${saturation}% ${lightness}%)">${glyph}</span>`;
+    }).join('');
+
+    lines.push(cells);
+  }
+
+  lines.push('');
+  lines.push(escapeTerminalHtml('MATRIX FEED STABLE // ANY KEY RETURNS TO SHELL'));
+
+  return {
+    html: renderTerminalAppHtml(lines),
+  };
+}
+
 export class SpaceStationScene {
   constructor(canvasContainer, options = {}) {
     this.container = canvasContainer;
@@ -257,6 +345,24 @@ export class SpaceStationScene {
     this.commandTerminal = null;
     this.nextTerminalSerial = 0;
     this.nextTerminalZIndex = 20;
+    this.freecam = {
+      active: false,
+      terminal: null,
+      position: new THREE.Vector3(),
+      lookDirection: new THREE.Vector3(0, 0, -1),
+      strafeDirection: new THREE.Vector3(1, 0, 0),
+      lookTarget: new THREE.Vector3(),
+      yaw: Math.PI,
+      pitch: 0,
+      moveState: {
+        forward: false,
+        backward: false,
+        left: false,
+        right: false,
+        boost: false,
+      },
+    };
+    this.freecamMoveVector = new THREE.Vector3();
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x01050a);
@@ -537,6 +643,10 @@ export class SpaceStationScene {
     if (this.commandTerminal === terminal) {
       this.commandTerminal = null;
     }
+
+    if (this.freecam.terminal === terminal) {
+      this.disableFreecam({ skipTerminalExit: true, releasePointerLock: true });
+    }
   }
 
   getTerminalSpawnOffset(kind = 'boot') {
@@ -583,9 +693,14 @@ export class SpaceStationScene {
     return terminal;
   }
 
-  createCommandTerminal() {
-    const offset = this.getTerminalSpawnOffset('command');
+  createCommandTerminal(options = {}) {
+    const offset = {
+      ...this.getTerminalSpawnOffset('command'),
+      ...(Number.isFinite(options.baseOffsetX) ? { x: options.baseOffsetX } : {}),
+      ...(Number.isFinite(options.baseOffsetY) ? { y: options.baseOffsetY } : {}),
+    };
     const terminal = this.createTerminal({
+      ...options,
       kind: 'command',
       os: this.defaultBootTerminalOs,
       draggable: true,
@@ -628,6 +743,31 @@ export class SpaceStationScene {
     const { name, args, flags, rawArgs } = parsed;
     const colorized = flags.has('--color');
 
+    if (name === 'clear') {
+      return { type: 'clear' };
+    }
+
+    if (name === 'exit') {
+      return { type: 'close' };
+    }
+
+    if (name === 'sh') {
+      const shell = this.createCommandTerminal({
+        baseOffsetX: terminal.baseOffsetX + terminal.manualOffsetX + 34,
+        baseOffsetY: terminal.baseOffsetY + terminal.manualOffsetY + 28,
+      });
+      shell.applyVariant(this.defaultBootTerminalOs);
+      shell.open();
+      this.bringTerminalToFront(shell);
+      return 'popped another one.';
+    }
+
+    if (name === 'ls') {
+      return [
+        ...PREFIX_COMMANDS,
+      ];
+    }
+
     if (name === 'echo') {
       return rawArgs;
     }
@@ -655,13 +795,68 @@ export class SpaceStationScene {
       return null;
     }
 
+    if (name === './cmatrix') {
+      terminal.startAppMode({
+        name: './cmatrix',
+        title: 'FREESIDE CMATRIX',
+        frameInterval: 1 / 18,
+        state: { columns: [], dt: 0.016 },
+        renderFrame: ({ state, dt }) => {
+          state.dt = dt;
+          return buildMatrixFrame(state);
+        },
+        onExit: () => ['Exited ./cmatrix.', ''],
+      });
+      return null;
+    }
+
+    if (name === './freecam') {
+      if (args.length > 0) {
+        return 'Usage: ./freecam';
+      }
+
+      if (this.freecam.active) {
+        this.disableFreecam();
+        return 'Freecam disengaged.';
+      }
+
+      terminal.startAppMode({
+        name: './freecam',
+        title: 'FREESIDE FREECAM',
+        frameInterval: 1 / 24,
+        exitOnAnyKey: false,
+        renderFrame: () => ({
+          text: [
+            'FREESIDE FREECAM // ACTIVE',
+            '',
+            'MOUSE   adjust view',
+            'W/A/S/D translate',
+            'SHIFT   boost',
+            'ESC     exit freecam',
+            '',
+            `POS X ${this.freecam.position.x.toFixed(2).padStart(7, ' ')}  Y ${this.freecam.position.y.toFixed(2).padStart(7, ' ')}  Z ${this.freecam.position.z.toFixed(2).padStart(7, ' ')}`,
+            `YAW ${THREE.MathUtils.radToDeg(this.freecam.yaw).toFixed(1).padStart(7, ' ')}  PITCH ${THREE.MathUtils.radToDeg(this.freecam.pitch).toFixed(1).padStart(7, ' ')}`,
+            '',
+            'PRESS ESC TO RETURN TO THE SHELL',
+          ].join('\n'),
+        }),
+        onExit: () => ['Exited ./freecam.', ''],
+      });
+      this.enableFreecam(terminal);
+      return null;
+    }
+
     if (name === 'help') {
       return [
         'Available commands:',
+        'clear           - clear the terminal output',
+        'exit            - close this terminal window',
         'echo <text>     - repeat text back to the terminal',
         'eq [--color]    - 12-band ASCII EQ meter',
         'anal [--color]  - waterfall audio analyser',
         'chsh [style]    - show or change shell style',
+        'ls              - list files',
+        'sh              - open another shell window',
       ];
     }
 
@@ -685,8 +880,53 @@ export class SpaceStationScene {
 
     return [
       `Unknown command: ${command}`,
-      'Available commands: echo, eq, anal, chsh',
+      'Available commands: clear, echo, eq, anal, chsh, help, ls, sh, exit',
     ];
+  }
+
+  enableFreecam(terminal) {
+    const lookDirection = new THREE.Vector3();
+    this.camera.getWorldDirection(lookDirection);
+
+    this.freecam.active = true;
+    this.freecam.terminal = terminal;
+    this.freecam.position.copy(this.camera.position);
+    this.freecam.lookDirection.copy(lookDirection).normalize();
+    this.freecam.yaw = Math.atan2(this.freecam.lookDirection.x, this.freecam.lookDirection.z);
+    this.freecam.pitch = Math.asin(THREE.MathUtils.clamp(this.freecam.lookDirection.y, -1, 1));
+    this.freecam.moveState.forward = false;
+    this.freecam.moveState.backward = false;
+    this.freecam.moveState.left = false;
+    this.freecam.moveState.right = false;
+    this.freecam.moveState.boost = false;
+
+    this.renderer.domElement.requestPointerLock?.();
+  }
+
+  disableFreecam(options = {}) {
+    if (!this.freecam.active) return;
+
+    const {
+      skipTerminalExit = false,
+      releasePointerLock = true,
+    } = options;
+    const terminal = this.freecam.terminal;
+
+    this.freecam.active = false;
+    this.freecam.terminal = null;
+    this.freecam.moveState.forward = false;
+    this.freecam.moveState.backward = false;
+    this.freecam.moveState.left = false;
+    this.freecam.moveState.right = false;
+    this.freecam.moveState.boost = false;
+
+    if (releasePointerLock && document.pointerLockElement === this.renderer.domElement) {
+      document.exitPointerLock?.();
+    }
+
+    if (!skipTerminalExit && terminal?.appMode?.name === './freecam') {
+      terminal.exitAppMode({ triggerKey: 'Escape' });
+    }
   }
 
   buildWindowsBootSequence(normalizedTitle, fingerprintLines) {
@@ -1120,6 +1360,9 @@ export class SpaceStationScene {
     window.addEventListener('resize', () => this.onResize());
     window.addEventListener('pointermove', (event) => this.onPointerMove(event));
     window.addEventListener('keydown', (event) => this.onKeyDown(event));
+    window.addEventListener('keyup', (event) => this.onKeyUp(event));
+    document.addEventListener('pointerlockchange', () => this.onPointerLockChange());
+    document.addEventListener('pointerlockerror', () => this.onPointerLockError());
     window.addEventListener('pointerout', (event) => {
       if (!event.relatedTarget) {
         this.pointerActive = false;
@@ -1129,6 +1372,18 @@ export class SpaceStationScene {
   }
 
   onPointerMove(event) {
+    if (this.freecam.active && document.pointerLockElement === this.renderer.domElement) {
+      this.freecam.yaw -= event.movementX * FREECAM_MOUSE_SENSITIVITY;
+      this.freecam.pitch = THREE.MathUtils.clamp(
+        this.freecam.pitch - event.movementY * FREECAM_MOUSE_SENSITIVITY,
+        -FREECAM_MAX_PITCH,
+        FREECAM_MAX_PITCH,
+      );
+      this.pointerActive = false;
+      this.pointerVelocity.set(0, 0);
+      return;
+    }
+
     const { clientX, clientY } = event;
 
     if (this.pointerActive) {
@@ -1147,10 +1402,35 @@ export class SpaceStationScene {
   }
 
   onKeyDown(event) {
+    const key = event.key?.toLowerCase();
+
+    if (this.freecam.active) {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this.disableFreecam();
+        return;
+      }
+
+      const movementKey = FREECAM_MOVEMENT_KEYS[key];
+      if (movementKey) {
+        event.preventDefault();
+        this.freecam.moveState[movementKey] = true;
+        return;
+      }
+
+      if (event.key === 'Shift') {
+        event.preventDefault();
+        this.freecam.moveState.boost = true;
+        return;
+      }
+
+      return;
+    }
+
     if (!this.bootHotkeysEnabled || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
     if (this.isTypingTarget(event.target)) return;
-
-    const key = event.key?.toLowerCase();
 
     if (key === 'c') {
       event.preventDefault();
@@ -1165,6 +1445,34 @@ export class SpaceStationScene {
     this.playStartupTerminal(bootTerminalOs);
   }
 
+  onKeyUp(event) {
+    if (!this.freecam.active) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+    const key = event.key?.toLowerCase();
+    const movementKey = FREECAM_MOVEMENT_KEYS[key];
+    if (movementKey) {
+      this.freecam.moveState[movementKey] = false;
+      return;
+    }
+
+    if (event.key === 'Shift') {
+      this.freecam.moveState.boost = false;
+    }
+  }
+
+  onPointerLockChange() {
+    if (!this.freecam.active) return;
+    if (document.pointerLockElement === this.renderer.domElement) return;
+
+    this.disableFreecam({ skipTerminalExit: false, releasePointerLock: false });
+  }
+
+  onPointerLockError() {
+    if (!this.freecam.active) return;
+    this.disableFreecam({ releasePointerLock: false });
+  }
+
   onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
@@ -1177,7 +1485,35 @@ export class SpaceStationScene {
     this.bloomPass.setSize(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor);
   }
 
-  updateCamera(time) {
+  updateCamera(time, dt) {
+    if (this.freecam.active) {
+      const lookDirection = this.freecam.lookDirection.set(
+        Math.sin(this.freecam.yaw) * Math.cos(this.freecam.pitch),
+        Math.sin(this.freecam.pitch),
+        Math.cos(this.freecam.yaw) * Math.cos(this.freecam.pitch),
+      ).normalize();
+      const strafeDirection = this.freecam.strafeDirection.crossVectors(WORLD_UP, lookDirection).normalize();
+      const moveVector = this.freecamMoveVector.set(0, 0, 0);
+
+      if (this.freecam.moveState.forward) moveVector.add(lookDirection);
+      if (this.freecam.moveState.backward) moveVector.sub(lookDirection);
+      if (this.freecam.moveState.right) moveVector.sub(strafeDirection);
+      if (this.freecam.moveState.left) moveVector.add(strafeDirection);
+
+      if (moveVector.lengthSq() > 0) {
+        moveVector.normalize().multiplyScalar(
+          FREECAM_BASE_SPEED * (this.freecam.moveState.boost ? FREECAM_BOOST_MULTIPLIER : 1) * dt,
+        );
+        this.freecam.position.add(moveVector);
+      }
+
+      this.freecam.lookTarget.copy(this.freecam.position).add(lookDirection);
+      this.camera.position.copy(this.freecam.position);
+      this.cameraLookAt.copy(this.freecam.lookTarget);
+      this.camera.lookAt(this.cameraLookAt);
+      return;
+    }
+
     const wobble = events.state.distortion * 0.03 + events.state.bass_hit * 0.014;
     this.cameraOffset.set(
       Math.sin(time * 1.2) * wobble,
@@ -1341,7 +1677,7 @@ export class SpaceStationScene {
     this.accumulatedDt %= this.frameInterval;
     const time = this.clock.getElapsedTime();
 
-    this.updateCamera(time);
+    this.updateCamera(time, frameDt);
     this.updateStationMotion(time, frameDt);
     this.updateStationStyling(time);
     this.updatePostProcessing(time);

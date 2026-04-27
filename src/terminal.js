@@ -296,10 +296,13 @@ export class TerminalWindow {
     this.timers.push(timerId);
   }
 
-  destroy() {
+  destroy(options = {}) {
     if (this.destroyed) return;
+    const skipHide = Boolean(options.skipHide);
 
-    this.hide();
+    if (!skipHide) {
+      this.hide();
+    }
     this.destroyed = true;
     if (this.focusFrameId) {
       window.cancelAnimationFrame(this.focusFrameId);
@@ -308,6 +311,23 @@ export class TerminalWindow {
     this.stopScript();
     this.root.remove();
     this.onDestroy?.(this);
+  }
+
+  close(options = {}) {
+    if (this.destroyed) return;
+
+    const animate = options.animate !== false;
+    if (!animate) {
+      this.destroy();
+      return;
+    }
+
+    this.hide({ animate: true });
+    const timerId = window.setTimeout(() => {
+      this.timers = this.timers.filter((value) => value !== timerId);
+      this.destroy({ skipHide: true });
+    }, 220);
+    this.timers.push(timerId);
   }
 
   clearOutput() {
@@ -330,7 +350,9 @@ export class TerminalWindow {
       hint: String(options.hint || 'Press any key to exit'),
       renderFrame,
       onExit: typeof options.onExit === 'function' ? options.onExit : null,
+      onKeyDown: typeof options.onKeyDown === 'function' ? options.onKeyDown : null,
       state: options.state && typeof options.state === 'object' ? options.state : {},
+      exitOnAnyKey: options.exitOnAnyKey !== false,
       frameInterval: Number.isFinite(options.frameInterval) ? Math.max(0, options.frameInterval) : 1 / 24,
       lastFrameTime: -Infinity,
       lastFrame: '',
@@ -435,6 +457,24 @@ export class TerminalWindow {
 
     const lines = String(response).replace(/\r/g, '').split('\n');
     lines.forEach((line) => this.appendLine(line));
+  }
+
+  handleCommandResponse(response) {
+    if (!response || typeof response !== 'object' || Array.isArray(response)) {
+      return false;
+    }
+
+    if (response.type === 'clear') {
+      this.clearOutput();
+      return true;
+    }
+
+    if (response.type === 'close') {
+      this.close({ animate: response.animate !== false });
+      return true;
+    }
+
+    return false;
   }
 
   scrollToBottom() {
@@ -645,12 +685,39 @@ export class TerminalWindow {
 
     this.pushCommandHistory(rawValue);
     const response = await this.onCommand(command, this);
+    if (this.handleCommandResponse(response)) {
+      return;
+    }
     this.appendResponse(response);
   }
 
   onRootKeyDown(event) {
     if (!this.appMode) return;
     if (event.target === this.input) return;
+
+    const keyHandler = this.appMode.onKeyDown;
+    if (keyHandler) {
+      const keyHandlerResult = keyHandler({
+        event,
+        terminal: this,
+        state: this.appMode.state,
+        name: this.appMode.name,
+        title: this.appMode.title,
+        hint: this.appMode.hint,
+      });
+
+      if (keyHandlerResult === true) {
+        event.preventDefault();
+        this.exitAppMode({ triggerKey: event.key });
+        return;
+      }
+
+      if (keyHandlerResult === false) {
+        return;
+      }
+    }
+
+    if (!this.appMode.exitOnAnyKey) return;
 
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
