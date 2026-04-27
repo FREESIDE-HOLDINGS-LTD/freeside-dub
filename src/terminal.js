@@ -746,6 +746,11 @@ export class TerminalWindow {
       }
     }
 
+    if (event.key === 'Escape') {
+      this.exitAppMode({ triggerKey: event.key });
+      return;
+    }
+
     if (!this.appMode.exitOnAnyKey) return;
 
     if (event.ctrlKey || event.metaKey || event.altKey) return;
