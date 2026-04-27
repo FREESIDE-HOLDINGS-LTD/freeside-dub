@@ -61,6 +61,7 @@ function setupVolumeControl() {
 function revealVolumeControl(root) {
   root.classList.remove('hidden');
   root.setAttribute('aria-hidden', 'false');
+  scene.setVolumeControl(root);
 }
 
 function setStatus(statusLabel, text) {

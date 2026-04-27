@@ -418,10 +418,39 @@ button:active {
   gap: 0.7rem;
   padding: 0.55rem 0.85rem;
   border: 1px solid rgba(121, 235, 255, 0.3);
-  background: rgba(2, 10, 18, 0.7);
+  background:
+    linear-gradient(180deg, rgba(2, 10, 18, 0.5), rgba(2, 10, 18, 0.84)),
+    repeating-linear-gradient(180deg, rgba(121, 235, 255, 0.04) 0 1px, transparent 1px 3px);
+  box-shadow:
+    0 0 28px rgba(0, 0, 0, 0.36),
+    0 0 24px rgba(121, 235, 255, 0.08),
+    inset 0 0 18px rgba(121, 235, 255, 0.04);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: var(--text-main);
   font-family: 'Share Tech Mono', monospace;
-  transition: opacity 0.5s ease;
+  mix-blend-mode: screen;
+  opacity: var(--volume-opacity, 0.8);
+  transform: translate3d(var(--volume-shift-x, 0), var(--volume-shift-y, 0), 0);
+  transition: opacity 0.3s ease;
+}
+
+.volume-control::before,
+.volume-control::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.volume-control::before {
+  border: 1px solid rgba(255, 126, 225, 0.08);
+  transform: translate(4px, 4px);
+}
+
+.volume-control::after {
+  background: linear-gradient(90deg, rgba(122, 231, 255, 0.06), transparent 22%, transparent 78%, rgba(255, 126, 225, 0.06));
+  opacity: var(--volume-glow, 0.35);
 }
 
 .volume-control.hidden {
