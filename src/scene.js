@@ -8,6 +8,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 //import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { grainShader } from './grain.js';
+import { audio } from './audio.js';
 import { TerminalWindow, normalizeTerminalOs } from './terminal.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -26,6 +27,9 @@ const BOOT_TERMINAL_KEYMAP = {
   l: 'LINUX',
 };
 
+const EQ_TERMINAL_LABELS = ['32', '64', '125', '250', '500', '1k', '2k', '4k', '6k', '8k', '12k', '16k'];
+const WATERFALL_CHARSET = ' .:-=+*#%@';
+
 function formatBootTimestamp(date) {
   const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
   const month = date.toLocaleDateString('en-US', { month: 'short' });
@@ -38,6 +42,88 @@ function formatBootTimestamp(date) {
   });
 
   return `${weekday} ${month} ${day} ${time}`;
+}
+
+function sampleTerminalSpectrumBands(count, minFreq = 32, maxFreq = 16000) {
+  const spectrum = audio.dataArray;
+  const length = spectrum?.length ?? 0;
+
+  if (!length || count <= 0) {
+    return Array.from({ length: Math.max(0, count) }, () => 0);
+  }
+
+  const nyquist = (audio.ctx?.sampleRate || 44100) * 0.5;
+  const safeMinFreq = Math.max(20, minFreq);
+  const safeMaxFreq = Math.min(maxFreq, nyquist);
+  const ratio = safeMaxFreq / safeMinFreq;
+
+  return Array.from({ length: count }, (_, index) => {
+    const startFreq = safeMinFreq * Math.pow(ratio, index / count);
+    const endFreq = safeMinFreq * Math.pow(ratio, (index + 1) / count);
+    const startIdx = Math.max(0, Math.floor((startFreq / nyquist) * length));
+    const endIdx = Math.min(length, Math.max(startIdx + 1, Math.ceil((endFreq / nyquist) * length)));
+
+    let sum = 0;
+    for (let i = startIdx; i < endIdx; i += 1) {
+      sum += spectrum[i];
+    }
+
+    const average = sum / Math.max(1, endIdx - startIdx);
+    return Math.pow(THREE.MathUtils.clamp(average / 255, 0, 1), 0.85);
+  });
+}
+
+function buildEqMeterFrame() {
+  const levels = sampleTerminalSpectrumBands(EQ_TERMINAL_LABELS.length);
+  const meterHeight = 10;
+  const grid = [];
+
+  for (let row = meterHeight; row >= 1; row -= 1) {
+    const threshold = row / meterHeight;
+    const cells = levels.map((level) => (level >= threshold ? '##' : '  '));
+    grid.push(` ${cells.join(' ')}`);
+  }
+
+  const low = Math.round((events.state.bands.bass + events.state.bands.lowmid) * 50);
+  const mid = Math.round((events.state.bands.mid + events.state.bands.highmid) * 50);
+  const high = Math.round(events.state.bands.high * 100);
+
+  return [
+    'FREESIDE EQ-12 // LIVE BAR METER',
+    `SOURCE ${audio.isPlaying ? 'LIVE' : 'IDLE'}  ENERGY ${Math.round(events.state.energy * 100).toString().padStart(3, '0')}  RMS ${Math.round(events.state.rms * 100).toString().padStart(3, '0')}`,
+    '',
+    ...grid,
+    ` ${EQ_TERMINAL_LABELS.map((label) => label.padStart(2, ' ')).join(' ')}`,
+    '',
+    `LOW ${String(low).padStart(3, '0')}  MID ${String(mid).padStart(3, '0')}  HIGH ${String(high).padStart(3, '0')}  PRESS ANY KEY TO EXIT`,
+  ].join('\n');
+}
+
+function buildWaterfallFrame(state) {
+  const width = 48;
+  const depth = 12;
+  const levels = sampleTerminalSpectrumBands(width);
+  const row = levels
+    .map((level) => WATERFALL_CHARSET[Math.min(WATERFALL_CHARSET.length - 1, Math.floor(level * (WATERFALL_CHARSET.length - 1)))])
+    .join('');
+
+  state.rows ??= [];
+  state.rows.push(row);
+  if (state.rows.length > depth) {
+    state.rows.shift();
+  }
+
+  const rows = Array.from({ length: depth }, (_, index) => state.rows[index] ?? ''.padEnd(width, ' '));
+
+  return [
+    'FREESIDE ANAL // WATERFALL SCAN',
+    `SOURCE ${audio.isPlaying ? 'LIVE' : 'IDLE'}  SWEEP ${Math.round(events.state.sweep * 100).toString().padStart(3, '0')}  FRINGE ${Math.round(events.state.fringe * 100).toString().padStart(3, '0')}`,
+    '',
+    ...rows.map((entry) => ` |${entry}|`),
+    ' L ---------------------------------------------- H',
+    '',
+    ' PRESS ANY KEY TO EXIT ',
+  ].join('\n');
 }
 
 export class SpaceStationScene {
@@ -396,13 +482,13 @@ export class SpaceStationScene {
       wobbleScale: 0.3,
       baseOffsetX: offset.x,
       baseOffsetY: offset.y,
-      onCommand: (command) => this.handleCommandTerminalCommand(command),
+      onCommand: (command, terminal) => this.handleCommandTerminalCommand(command, terminal),
     });
 
     terminal.root.classList.add('system-terminal--command');
     terminal.appendResponse([
       'Freeside command relay online.',
-      'Try: hello',
+      'Try: hello, eq, anal',
       '',
     ]);
 
@@ -425,16 +511,48 @@ export class SpaceStationScene {
     this.bringTerminalToFront(this.commandTerminal);
   }
 
-  handleCommandTerminalCommand(command) {
+  handleCommandTerminalCommand(command, terminal) {
     const normalized = command.trim().toLowerCase();
 
     if (normalized === 'hello' || normalized === 'hello world') {
       return 'Hello, world.';
     }
 
+    if (normalized === 'eq') {
+      terminal.startAppMode({
+        name: 'eq',
+        title: 'FREESIDE EQ-12',
+        frameInterval: 1 / 20,
+        renderFrame: () => buildEqMeterFrame(),
+        onExit: () => ['Exited eq.', ''],
+      });
+      return null;
+    }
+
+    if (normalized === 'anal' || normalized === 'analyzer' || normalized === 'analyser') {
+      terminal.startAppMode({
+        name: 'anal',
+        title: 'FREESIDE ANAL',
+        frameInterval: 1 / 20,
+        state: { rows: [] },
+        renderFrame: ({ state }) => buildWaterfallFrame(state),
+        onExit: () => ['Exited anal.', ''],
+      });
+      return null;
+    }
+
+    if (normalized === 'help') {
+      return [
+        'Available commands:',
+        'hello  - sanity check',
+        'eq     - 12-band ASCII EQ meter',
+        'anal   - waterfall audio analyser',
+      ];
+    }
+
     return [
       `Unknown command: ${command}`,
-      'Available commands: hello',
+      'Available commands: hello, eq, anal',
     ];
   }
 
@@ -1077,7 +1195,7 @@ export class SpaceStationScene {
     };
 
     this.terminals.forEach((terminal) => {
-      terminal.update(time, dt, pointerState, events.state);
+      terminal.update(time, dt, pointerState, events.state, { audio });
     });
   }
 

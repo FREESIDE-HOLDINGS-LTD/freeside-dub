@@ -126,11 +126,13 @@ export class TerminalWindow {
     this.onDestroy = typeof options.onDestroy === 'function' ? options.onDestroy : null;
     this.onCommand = typeof options.onCommand === 'function' ? options.onCommand : null;
     this.promptText = options.promptText || TERMINAL_PROMPTS[this.os];
+    this.appMode = null;
 
     this.root = document.createElement('div');
     this.root.className = 'system-terminal hidden';
     this.root.dataset.terminalId = this.id;
     this.root.setAttribute('aria-hidden', 'true');
+    this.root.tabIndex = -1;
 
     this.frame = document.createElement('img');
     this.frame.className = 'system-terminal__frame';
@@ -145,7 +147,12 @@ export class TerminalWindow {
 
     this.output = document.createElement('div');
     this.output.className = 'system-terminal__output';
-    this.scroller.append(this.output);
+
+    this.appScreen = document.createElement('div');
+    this.appScreen.className = 'system-terminal__app';
+    this.appScreen.setAttribute('aria-hidden', 'true');
+
+    this.scroller.append(this.output, this.appScreen);
     this.viewport.append(this.scroller);
 
     if (this.interactive) {
@@ -199,6 +206,7 @@ export class TerminalWindow {
     this.root.addEventListener('pointerup', (event) => this.onRootPointerUp(event));
     this.root.addEventListener('pointercancel', (event) => this.onRootPointerUp(event));
     this.root.addEventListener('click', () => this.focusInput());
+    this.root.addEventListener('keydown', (event) => this.onRootKeyDown(event));
 
     this.applyVariant(this.os);
     this.refreshInteractivity();
@@ -301,6 +309,85 @@ export class TerminalWindow {
     this.scrollToBottom();
   }
 
+  startAppMode(options = {}) {
+    if (!this.interactive) return;
+
+    const renderFrame = typeof options.renderFrame === 'function' ? options.renderFrame : null;
+    if (!renderFrame) {
+      throw new Error('Terminal app mode requires a renderFrame callback.');
+    }
+
+    this.stopScript();
+    this.appMode = {
+      name: String(options.name || 'app'),
+      title: String(options.title || options.name || 'APP'),
+      hint: String(options.hint || 'Press any key to exit'),
+      renderFrame,
+      onExit: typeof options.onExit === 'function' ? options.onExit : null,
+      state: options.state && typeof options.state === 'object' ? options.state : {},
+      frameInterval: Number.isFinite(options.frameInterval) ? Math.max(0, options.frameInterval) : 1 / 24,
+      lastFrameTime: -Infinity,
+      lastFrame: '',
+    };
+
+    this.root.classList.add('system-terminal--app-active');
+    this.appScreen.textContent = '';
+    this.appScreen.setAttribute('aria-hidden', 'false');
+    this.scrollToBottom();
+    this.open();
+    this.focusInput();
+    this.renderAppFrame(performance.now() / 1000, 0, {});
+  }
+
+  exitAppMode(context = {}) {
+    if (!this.appMode) return;
+
+    const appMode = this.appMode;
+    this.appMode = null;
+    this.root.classList.remove('system-terminal--app-active');
+    this.appScreen.textContent = '';
+    this.appScreen.setAttribute('aria-hidden', 'true');
+
+    const response = appMode.onExit?.({
+      terminal: this,
+      state: appMode.state,
+      triggerKey: context.triggerKey ?? null,
+      name: appMode.name,
+      title: appMode.title,
+    });
+
+    if (response != null) {
+      this.appendResponse(response);
+    }
+
+    this.scrollToBottom();
+    this.focusInput();
+  }
+
+  renderAppFrame(time, dt, frameContext = {}) {
+    if (!this.appMode) return;
+    if (time - this.appMode.lastFrameTime < this.appMode.frameInterval) return;
+
+    const frame = this.appMode.renderFrame({
+      terminal: this,
+      state: this.appMode.state,
+      time,
+      dt,
+      name: this.appMode.name,
+      title: this.appMode.title,
+      hint: this.appMode.hint,
+      ...frameContext,
+    });
+    const text = Array.isArray(frame) ? frame.join('\n') : String(frame ?? '');
+
+    if (text !== this.appMode.lastFrame) {
+      this.appScreen.textContent = text;
+      this.appMode.lastFrame = text;
+    }
+
+    this.appMode.lastFrameTime = time;
+  }
+
   appendLine(text = '') {
     const entry = document.createElement('div');
     entry.className = 'system-terminal__line';
@@ -385,7 +472,7 @@ export class TerminalWindow {
   }
 
   focusInput() {
-    if (!this.interactive || !this.visible || !this.input) return;
+    if (!this.interactive || !this.visible) return;
 
     if (this.focusFrameId) {
       window.cancelAnimationFrame(this.focusFrameId);
@@ -393,14 +480,21 @@ export class TerminalWindow {
 
     this.focusFrameId = window.requestAnimationFrame(() => {
       this.focusFrameId = 0;
-      if (!this.interactive || !this.visible || !this.input) return;
+      if (!this.interactive || !this.visible) return;
 
+      if (this.appMode) {
+        this.root.focus({ preventScroll: true });
+        return;
+      }
+
+      if (!this.input) return;
       this.input.focus({ preventScroll: true });
       this.input.setSelectionRange(this.input.value.length, this.input.value.length);
     });
   }
 
   async onInputKeyDown(event) {
+    if (this.appMode) return;
     if (event.key !== 'Enter' || event.shiftKey) return;
 
     event.preventDefault();
@@ -418,6 +512,17 @@ export class TerminalWindow {
 
     const response = await this.onCommand(command, this);
     this.appendResponse(response);
+  }
+
+  onRootKeyDown(event) {
+    if (!this.appMode) return;
+    if (event.target === this.input) return;
+
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(event.key)) return;
+
+    event.preventDefault();
+    this.exitAppMode({ triggerKey: event.key });
   }
 
   onRootPointerDown(event) {
@@ -456,7 +561,7 @@ export class TerminalWindow {
     this.dragState = null;
   }
 
-  update(time, dt, pointerState, effectState) {
+  update(time, dt, pointerState, effectState, frameContext = {}) {
     if (this.destroyed || (!this.visible && !this.closing)) return;
 
     const wobbleScale = this.wobbleScale;
@@ -517,5 +622,9 @@ export class TerminalWindow {
     this.root.style.setProperty('--system-terminal-shift-y', `${shiftY.toFixed(2)}px`);
     this.root.style.setProperty('--system-terminal-opacity', `${0.96 - distortion * 0.08}`);
     this.root.style.setProperty('--system-terminal-glow', `${0.08 + fringe * 0.12}`);
+
+    if (this.appMode) {
+      this.renderAppFrame(time, dt, frameContext);
+    }
   }
 }

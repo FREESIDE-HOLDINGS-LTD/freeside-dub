@@ -340,6 +340,15 @@ button:active {
   width: min(760px, calc(100vw - 4rem));
 }
 
+.system-terminal--app-active .system-terminal__output,
+.system-terminal--app-active .system-terminal__prompt {
+  display: none;
+}
+
+.system-terminal--app-active .system-terminal__app {
+  display: block;
+}
+
 .system-terminal.hidden {
   visibility: hidden;
 }
@@ -412,6 +421,18 @@ button:active {
   gap: 0;
   align-content: start;
   min-height: min-content;
+}
+
+.system-terminal__app {
+  display: none;
+  min-height: 100%;
+  color: var(--system-terminal-color, #c9c9c9);
+  font-family: var(--system-terminal-font-family, Consolas, 'Lucida Console', 'Courier New', monospace);
+  font-size: var(--system-terminal-font-size, clamp(11px, 1.05vw, 17px));
+  line-height: var(--system-terminal-line-height, 1.2);
+  white-space: pre;
+  opacity: 0.96;
+  padding-bottom: 0.15rem;
 }
 
 .system-terminal__line,
