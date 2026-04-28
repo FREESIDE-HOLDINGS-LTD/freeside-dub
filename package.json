@@ -1,6 +1,6 @@
 {
   "name": "freeside-dub-satellite",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,10 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "lint": "oxlint",
-    "lint:fix": "oxlint --fix"
+    "lint:fix": "oxlint --fix",
+    "screenshots": "node docs/screenshots/capture-screenshots.mjs"
   },
   "devDependencies": {
     "oxlint": "^1.62.0",
+    "playwright": "^1.59.1",
     "vite": "^8.0.4"
   },
   "dependencies": {
