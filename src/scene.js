@@ -67,6 +67,157 @@ const FREECAM_MOUSE_SENSITIVITY = 0.0023;
 const FREECAM_MAX_PITCH = Math.PI * 0.48;
 const FREECAM_BASE_SPEED = 12;
 const FREECAM_BOOST_MULTIPLIER = 1.9;
+const QUALITY_PROFILES = [
+  {
+    name: 'low',
+    maxFps: 30,
+    pixelRatioCap: 0.38,
+    maxRenderPixels: 430000,
+    bloomDownscaleFactor: 0.42,
+    enableBloom: false,
+    enableGrain: true,
+    showPanelGlow: false,
+    showVertices: false,
+    showRegionEffects: false,
+    showBackdropArcs: false,
+    starOpacity: 0.58,
+    starCount: 2800,
+  },
+  {
+    name: 'medium',
+    maxFps: 48,
+    pixelRatioCap: 0.44,
+    maxRenderPixels: 520000,
+    bloomDownscaleFactor: 0.56,
+    enableBloom: true,
+    enableGrain: true,
+    showPanelGlow: false,
+    showVertices: true,
+    showRegionEffects: false,
+    showBackdropArcs: true,
+    starOpacity: 0.76,
+    starCount: 4000,
+  },
+  {
+    name: 'high',
+    maxFps: 90,
+    pixelRatioCap: 0.5,
+    maxRenderPixels: 620000,
+    bloomDownscaleFactor: 0.72,
+    enableBloom: true,
+    enableGrain: true,
+    showPanelGlow: true,
+    showVertices: true,
+    showRegionEffects: true,
+    showBackdropArcs: true,
+    starOpacity: 0.9,
+    starCount: 5200,
+  },
+];
+const ADAPTIVE_RENDER_SETTING_DEFINITIONS = [
+  {
+    key: 'maxFps',
+    label: 'Target FPS',
+    type: 'integer',
+    min: 24,
+    max: 60,
+    step: 2,
+    format: (value) => `${value} FPS`,
+    detail: 'Frame cap for the scene update loop.',
+  },
+  {
+    key: 'pixelRatioCap',
+    label: 'Pixel Ratio Cap',
+    type: 'number',
+    min: 0.32,
+    max: 0.7,
+    step: 0.02,
+    precision: 2,
+    format: (value) => `${value.toFixed(2)}x`,
+    detail: 'Upper bound for internal render resolution scaling.',
+  },
+  {
+    key: 'maxRenderPixels',
+    label: 'Pixel Budget',
+    type: 'integer',
+    min: 260000,
+    max: 960000,
+    step: 20000,
+    format: (value) => `${Math.round(value / 1000)}K PX`,
+    detail: 'Viewport pixel budget before the scene scales down.',
+  },
+  {
+    key: 'bloomDownscaleFactor',
+    label: 'Bloom Scale',
+    type: 'number',
+    min: 0.3,
+    max: 0.9,
+    step: 0.02,
+    precision: 2,
+    format: (value) => `${value.toFixed(2)}x`,
+    detail: 'Resolution factor used by the bloom pass.',
+  },
+  {
+    key: 'enableBloom',
+    label: 'Bloom Pass',
+    type: 'boolean',
+    detail: 'Enable or disable the bloom post-process pass.',
+  },
+  {
+    key: 'enableGrain',
+    label: 'Grain Pass',
+    type: 'boolean',
+    detail: 'Enable or disable the grain / fringe post-process pass.',
+  },
+  {
+    key: 'showPanelGlow',
+    label: 'Panel Glow',
+    type: 'boolean',
+    detail: 'Toggle additive glow planes on the station panels.',
+  },
+  {
+    key: 'showVertices',
+    label: 'Vertex Points',
+    type: 'boolean',
+    detail: 'Toggle point-cloud overlays on the station meshes.',
+  },
+  {
+    key: 'showRegionEffects',
+    label: 'Region Effects',
+    type: 'boolean',
+    detail: 'Toggle shader pulse and core effect meshes.',
+  },
+  {
+    key: 'showBackdropArcs',
+    label: 'Backdrop Arcs',
+    type: 'boolean',
+    detail: 'Toggle the large torus arc meshes behind the station.',
+  },
+  {
+    key: 'starOpacity',
+    label: 'Star Opacity',
+    type: 'number',
+    min: 0.3,
+    max: 1,
+    step: 0.04,
+    precision: 2,
+    format: (value) => value.toFixed(2),
+    detail: 'Opacity multiplier for the background starfield.',
+  },
+  {
+    key: 'starCount',
+    label: 'Star Count',
+    type: 'integer',
+    min: 1200,
+    max: 5200,
+    step: 200,
+    format: (value) => `${value}`,
+    detail: 'Number of stars drawn from the shared star buffer.',
+  },
+];
+const ADAPTIVE_RENDER_SETTINGS_BY_KEY = new Map(
+  ADAPTIVE_RENDER_SETTING_DEFINITIONS.map((definition) => [definition.key, definition]),
+);
 
 function formatBootTimestamp(date) {
   const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
@@ -137,13 +288,23 @@ export class SpaceStationScene {
       powerPreference: 'low-power',
       stencil: false,
     });
-    this.pixelRatio = Math.min(window.devicePixelRatio, 0.5);
-    this.bloomDownscaleFactor = 0.75;
-    this.maxFps = 60;
+    this.qualityProfileIndex = this.getInitialQualityProfileIndex();
+    this.activeQualityProfile = QUALITY_PROFILES[this.qualityProfileIndex];
+    this.appliedQualityName = null;
+    this.pixelRatio = this.computePixelRatio(this.activeQualityProfile);
+    this.bloomDownscaleFactor = this.activeQualityProfile.bloomDownscaleFactor;
+    this.maxFps = this.activeQualityProfile.maxFps;
     this.frameInterval = 1 / this.maxFps;
     this.accumulatedDt = 0;
     this.domUpdateInterval = 1 / 30;
     this.domAccumulatedDt = 0;
+    this.performanceMonitor = {
+      smoothedRenderCost: this.frameInterval * 0.5,
+      evaluationTimer: 0,
+      recoveryTimer: 0,
+      switchCooldown: 0,
+    };
+    this.adaptiveQualityEditorSessions = 0;
     this.pointerState = {
       active: false,
       position: this.pointerPosition,
@@ -167,7 +328,7 @@ export class SpaceStationScene {
     this.composer.addPass(this.fxaaPass);*/
 
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor),
+      new THREE.Vector2(...this.getBloomRenderSize()),
       1.24,
       0.35,
       0.52,
@@ -264,8 +425,8 @@ export class SpaceStationScene {
     this.createTelemetryHud();
     this.loadStationModel();
     this.setupEventListeners();
-
-    this.composer.render();
+    this.applyQualityProfile(true);
+    this.renderScene();
   }
 
   setupLighting() {
@@ -337,6 +498,227 @@ export class SpaceStationScene {
       this.backdropArcs.add(arc);
     });
     this.scene.add(this.backdropArcs);
+  }
+
+  getInitialQualityProfileIndex() {
+    const viewportPixels = window.innerWidth * window.innerHeight;
+
+    if (viewportPixels > 3000000) return 0;
+    if (viewportPixels > 1500000) return 1;
+    return 2;
+  }
+
+  computePixelRatio(profile = this.activeQualityProfile) {
+    const viewportPixels = Math.max(1, window.innerWidth * window.innerHeight);
+    const deviceRatio = Math.min(window.devicePixelRatio || 1, 1);
+    const budgetScale = Math.sqrt(profile.maxRenderPixels / viewportPixels);
+
+    return THREE.MathUtils.clamp(
+      Math.min(deviceRatio, profile.pixelRatioCap, budgetScale),
+      0.32,
+      profile.pixelRatioCap,
+    );
+  }
+
+  getBloomRenderSize() {
+    return [
+      Math.max(1, Math.round(window.innerWidth * this.pixelRatio * this.bloomDownscaleFactor)),
+      Math.max(1, Math.round(window.innerHeight * this.pixelRatio * this.bloomDownscaleFactor)),
+    ];
+  }
+
+  applyRenderResolution() {
+    this.pixelRatio = this.computePixelRatio(this.activeQualityProfile);
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.composer.setPixelRatio(this.pixelRatio);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.bloomPass.setSize(...this.getBloomRenderSize());
+  }
+
+  setObjectVisibility(objects, isVisible) {
+    objects.forEach((object) => {
+      if (object) object.visible = isVisible;
+    });
+  }
+
+  setEffectVisibility(effects, isVisible) {
+    effects.forEach((effect) => {
+      const target = effect?.mesh || effect;
+      if (target) target.visible = isVisible;
+    });
+  }
+
+  applyQualityProfile(force = false) {
+    const profile = QUALITY_PROFILES[this.qualityProfileIndex];
+    if (!force && this.appliedQualityName === profile.name) return;
+
+    this.activeQualityProfile = profile;
+    this.appliedQualityName = profile.name;
+    this.bloomDownscaleFactor = profile.bloomDownscaleFactor;
+    this.maxFps = profile.maxFps;
+    this.frameInterval = 1 / this.maxFps;
+
+    if (this.renderer && this.composer && this.bloomPass) {
+      this.applyRenderResolution();
+    }
+
+    if (this.starfield) {
+      this.starfield.material.opacity = profile.starOpacity;
+      this.starfield.geometry.setDrawRange(0, profile.starCount);
+    }
+
+    if (this.backdropArcs) {
+      this.backdropArcs.visible = profile.showBackdropArcs;
+    }
+
+    this.setObjectVisibility(this.bodyVertices, profile.showVertices);
+    this.setObjectVisibility(this.coreVertices, profile.showVertices);
+    this.setObjectVisibility(this.foreVertices, profile.showVertices);
+    this.setObjectVisibility(this.aftVertices, profile.showVertices);
+    this.setEffectVisibility(this.coreEffects, profile.showRegionEffects);
+    this.setEffectVisibility(this.foreEffects, profile.showRegionEffects);
+    this.setEffectVisibility(this.aftEffects, profile.showRegionEffects);
+    this.panelEntries.forEach((entry) => {
+      entry.frontMesh.visible = profile.showPanelGlow;
+      entry.backMesh.visible = profile.showPanelGlow;
+    });
+  }
+
+  getCurrentQualityProfile() {
+    return QUALITY_PROFILES[this.qualityProfileIndex];
+  }
+
+  beginAdaptiveRenderEditing() {
+    this.adaptiveQualityEditorSessions += 1;
+  }
+
+  endAdaptiveRenderEditing() {
+    this.adaptiveQualityEditorSessions = Math.max(0, this.adaptiveQualityEditorSessions - 1);
+  }
+
+  formatAdaptiveRenderSettingValue(definition, value) {
+    if (typeof definition.format === 'function') {
+      return definition.format(value);
+    }
+
+    if (definition.type === 'boolean') {
+      return value ? 'ON' : 'OFF';
+    }
+
+    return String(value);
+  }
+
+  getAdaptiveRenderEditorSnapshot() {
+    const profile = this.getCurrentQualityProfile();
+    const renderWidth = Math.max(1, Math.round(window.innerWidth * this.pixelRatio));
+    const renderHeight = Math.max(1, Math.round(window.innerHeight * this.pixelRatio));
+    const renderCostMs = this.performanceMonitor.smoothedRenderCost * 1000;
+    const activePasses = [
+      this.bloomPass.enabled ? 'BLOOM' : null,
+      this.grainPass.enabled ? 'GRAIN' : null,
+    ].filter(Boolean);
+
+    return {
+      profileName: profile.name.toUpperCase(),
+      runtimeLines: [
+        `PROFILE ${profile.name.toUpperCase()}  FPS ${this.maxFps.toString().padStart(2, '0')}  RES ${this.pixelRatio.toFixed(2)}x`,
+        `FRAME ${renderCostMs.toFixed(2).padStart(6, ' ')} MS  SIZE ${renderWidth}x${renderHeight}`,
+        `PASSES ${(activePasses.join(' + ') || 'RAW').padEnd(13, ' ')}  AUTO ${this.adaptiveQualityEditorSessions > 0 ? 'PAUSED' : 'LIVE'}`,
+      ],
+      controls: ADAPTIVE_RENDER_SETTING_DEFINITIONS.map((definition) => {
+        const value = profile[definition.key];
+
+        return {
+          id: definition.key,
+          label: definition.label,
+          valueText: this.formatAdaptiveRenderSettingValue(definition, value),
+          detail: definition.detail,
+        };
+      }),
+    };
+  }
+
+  adjustAdaptiveRenderSetting(settingId, direction = 1) {
+    const definition = ADAPTIVE_RENDER_SETTINGS_BY_KEY.get(settingId);
+    if (!definition) return false;
+
+    const profile = this.getCurrentQualityProfile();
+    const currentValue = profile[definition.key];
+    let nextValue = currentValue;
+
+    if (definition.type === 'boolean') {
+      nextValue = !currentValue;
+    } else {
+      const stepDirection = Math.sign(direction) || 1;
+      nextValue = currentValue + definition.step * stepDirection;
+      if (definition.type === 'integer') {
+        nextValue = Math.round(nextValue);
+      }
+      if (Number.isFinite(definition.min)) {
+        nextValue = Math.max(definition.min, nextValue);
+      }
+      if (Number.isFinite(definition.max)) {
+        nextValue = Math.min(definition.max, nextValue);
+      }
+      if (Number.isFinite(definition.precision)) {
+        nextValue = Number(nextValue.toFixed(definition.precision));
+      }
+    }
+
+    if (nextValue === currentValue) return false;
+
+    profile[definition.key] = nextValue;
+    this.applyQualityProfile(true);
+    return true;
+  }
+
+  updatePerformanceBudget(renderCost, dt) {
+    const monitor = this.performanceMonitor;
+    monitor.smoothedRenderCost = THREE.MathUtils.lerp(monitor.smoothedRenderCost, renderCost, 0.12);
+    monitor.evaluationTimer += dt;
+    monitor.switchCooldown = Math.max(0, monitor.switchCooldown - dt);
+
+    const upgradeThreshold = this.frameInterval * 0.45;
+    if (monitor.smoothedRenderCost < upgradeThreshold) {
+      monitor.recoveryTimer += dt;
+    } else {
+      monitor.recoveryTimer = 0;
+    }
+
+    if (this.adaptiveQualityEditorSessions > 0) {
+      monitor.evaluationTimer = 0;
+      monitor.recoveryTimer = 0;
+      return;
+    }
+
+    if (monitor.evaluationTimer < 1.5 || monitor.switchCooldown > 0) return;
+    monitor.evaluationTimer = 0;
+
+    const overloaded = monitor.smoothedRenderCost > this.frameInterval * 0.9;
+    if (overloaded && this.qualityProfileIndex > 0) {
+      this.qualityProfileIndex -= 1;
+      monitor.recoveryTimer = 0;
+      monitor.switchCooldown = 2.5;
+      this.applyQualityProfile();
+      return;
+    }
+
+    if (monitor.recoveryTimer >= 6 && this.qualityProfileIndex < QUALITY_PROFILES.length - 1) {
+      this.qualityProfileIndex += 1;
+      monitor.recoveryTimer = 0;
+      monitor.switchCooldown = 4;
+      this.applyQualityProfile();
+    }
+  }
+
+  renderScene() {
+    if (this.bloomPass.enabled || this.grainPass.enabled) {
+      this.composer.render();
+      return;
+    }
+
+    this.renderer.render(this.scene, this.camera);
   }
 
   createTelemetryHud() {
@@ -775,6 +1157,7 @@ export class SpaceStationScene {
     this.stationAxis.copy(this.computeBodyAxis(model));
     this.updateAxisBasis();
     this.buildStationPresentation();
+    this.applyQualityProfile(true);
     this.fitCameraToStation();
   }
 
@@ -999,6 +1382,8 @@ export class SpaceStationScene {
 
     return {
       mesh,
+      frontMesh: plane,
+      backMesh: planeBack,
       frontMaterial: glowMaterial,
       backMaterial: planeBack.material,
     };
@@ -1202,13 +1587,7 @@ export class SpaceStationScene {
   onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.composer.setSize(window.innerWidth, window.innerHeight);
-    /*this.fxaaPass.uniforms.resolution.value.set(
-      1 / (window.innerWidth * this.pixelRatio),
-      1 / (window.innerHeight * this.pixelRatio),
-    );*/
-    this.bloomPass.setSize(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor);
+    this.applyQualityProfile(true);
   }
 
   updateCamera(time, dt) {
@@ -1269,6 +1648,7 @@ export class SpaceStationScene {
   }
 
   updateStationStyling(time) {
+    const qualityProfile = this.activeQualityProfile;
     const { bands, bass_hit: bassHit, pulse, shimmer, sweep, centroid, rms } = events.state;
 
     this.wireMaterials.panels.color.copy(CYAN).lerp(BLUE, bands.lowmid * 0.3).lerp(PINK, shimmer * 0.14);
@@ -1295,51 +1675,71 @@ export class SpaceStationScene {
     this.vertexMaterials.aft.color.copy(ORANGE).lerp(PINK, pulse * 0.12);
     this.vertexMaterials.aft.opacity = 0.4 + bassHit * 0.22 + pulse * 0.1;
 
-    this.panelEntries.forEach((entry, index) => {
-      const intensity = bands.lowmid * 0.58 + shimmer * 0.42 + Math.sin(time * 1.3 + index * 0.7) * 0.04;
-      const opacity = Math.max(0, intensity - 0.16) * 0.34;
-      entry.frontMaterial.color.copy(CYAN).lerp(PINK, shimmer * 0.18);
-      entry.backMaterial.color.copy(CYAN).lerp(BLUE, bands.high * 0.2);
-      entry.frontMaterial.opacity = opacity;
-      entry.backMaterial.opacity = opacity * 0.82;
-    });
+    if (qualityProfile.showPanelGlow) {
+      this.panelEntries.forEach((entry, index) => {
+        const intensity = bands.lowmid * 0.58 + shimmer * 0.42 + Math.sin(time * 1.3 + index * 0.7) * 0.04;
+        const opacity = Math.max(0, intensity - 0.16) * 0.34;
+        entry.frontMaterial.color.copy(CYAN).lerp(PINK, shimmer * 0.18);
+        entry.backMaterial.color.copy(CYAN).lerp(BLUE, bands.high * 0.2);
+        entry.frontMaterial.opacity = opacity;
+        entry.backMaterial.opacity = opacity * 0.82;
+      });
+    }
 
-    this.coreEffects.forEach((effect, index) => {
-      const scale = 1 + bands.mid * 0.5 + sweep * 0.18 + Math.sin(time * 1.8 + index) * 0.06;
-      effect.scale.setScalar(scale);
-      effect.material.opacity = 0.12 + bands.mid * 0.22 + sweep * 0.12;
-      effect.material.color.copy(PINK).lerp(CYAN, sweep * 0.22);
-      effect.rotation.x = time * (0.5 + index * 0.03);
-      effect.rotation.y = time * (0.8 + index * 0.04);
-    });
+    if (qualityProfile.showRegionEffects) {
+      this.coreEffects.forEach((effect, index) => {
+        const scale = 1 + bands.mid * 0.5 + sweep * 0.18 + Math.sin(time * 1.8 + index) * 0.06;
+        effect.scale.setScalar(scale);
+        effect.material.opacity = 0.12 + bands.mid * 0.22 + sweep * 0.12;
+        effect.material.color.copy(PINK).lerp(CYAN, sweep * 0.22);
+        effect.rotation.x = time * (0.5 + index * 0.03);
+        effect.rotation.y = time * (0.8 + index * 0.04);
+      });
 
-    this.foreEffects.forEach((effect, index) => {
-      effect.material.uniforms.uRadius.value = THREE.MathUtils.clamp(0.16 + centroid * 0.34 + shimmer * 0.08, 0.12, 0.72);
-      effect.material.uniforms.uOpacity.value = 0.18 + shimmer * 0.2 + centroid * 0.24;
-      effect.material.uniforms.uPhase.value = time * 0.65 + index * 0.18;
-      effect.material.uniforms.uColor.value.copy(effect.baseColor).lerp(CYAN, shimmer * 0.16);
-    });
+      this.foreEffects.forEach((effect, index) => {
+        effect.material.uniforms.uRadius.value = THREE.MathUtils.clamp(0.16 + centroid * 0.34 + shimmer * 0.08, 0.12, 0.72);
+        effect.material.uniforms.uOpacity.value = 0.18 + shimmer * 0.2 + centroid * 0.24;
+        effect.material.uniforms.uPhase.value = time * 0.65 + index * 0.18;
+        effect.material.uniforms.uColor.value.copy(effect.baseColor).lerp(CYAN, shimmer * 0.16);
+      });
 
-    this.aftEffects.forEach((effect, index) => {
-      effect.material.uniforms.uRadius.value = THREE.MathUtils.clamp(0.14 + bassHit * 0.3 + pulse * 0.14, 0.12, 0.68);
-      effect.material.uniforms.uOpacity.value = 0.2 + bassHit * 0.22 + pulse * 0.16;
-      effect.material.uniforms.uPhase.value = time * 0.52 + index * 0.16;
-      effect.material.uniforms.uColor.value.copy(effect.baseColor).lerp(PINK, pulse * 0.12);
-    });
+      this.aftEffects.forEach((effect, index) => {
+        effect.material.uniforms.uRadius.value = THREE.MathUtils.clamp(0.14 + bassHit * 0.3 + pulse * 0.14, 0.12, 0.68);
+        effect.material.uniforms.uOpacity.value = 0.2 + bassHit * 0.22 + pulse * 0.16;
+        effect.material.uniforms.uPhase.value = time * 0.52 + index * 0.16;
+        effect.material.uniforms.uColor.value.copy(effect.baseColor).lerp(PINK, pulse * 0.12);
+      });
+    }
 
     this.starfield.rotation.y = time * 0.008;
-    this.backdropArcs.rotation.z = time * 0.016;
+    if (qualityProfile.showBackdropArcs) {
+      this.backdropArcs.rotation.z = time * 0.016;
+    }
   }
 
   updatePostProcessing(time) {
-    this.bloomPass.strength = 0.42 + events.state.pulse * 0.24 + events.state.shimmer * 0.2;
-    this.bloomPass.radius = 0.42 + events.state.centroid * 0.16;
+    const qualityProfile = this.activeQualityProfile;
+    const bloomActive = qualityProfile.enableBloom
+      && (events.state.energy > 0.05 || events.state.pulse > 0.04 || events.state.shimmer > 0.04);
+    const grainActive = qualityProfile.enableGrain
+      && (events.state.energy > 0.03 || events.state.fringe > 0.01 || events.state.distortion > 0.01);
+
+    this.bloomPass.enabled = bloomActive;
+    this.grainPass.enabled = grainActive;
+
+    if (bloomActive) {
+      this.bloomPass.strength = 0.42 + events.state.pulse * 0.24 + events.state.shimmer * 0.2;
+      this.bloomPass.radius = 0.42 + events.state.centroid * 0.16;
+    }
+
     this.renderer.toneMappingExposure = 0.98 + events.state.energy * 0.12 + events.state.rms * 0.08;
 
-    this.grainPass.uniforms.u_time.value = time;
-    this.grainPass.uniforms.u_strength.value = 0.022 + events.state.energy * 0.014;
-    this.grainPass.uniforms.u_scanline.value = 0.05 + events.state.shimmer * 0.05;
-    this.grainPass.uniforms.u_fringe.value = events.state.fringe * 0.24 + events.state.distortion * 0.14;
+    if (grainActive) {
+      this.grainPass.uniforms.u_time.value = time;
+      this.grainPass.uniforms.u_strength.value = 0.022 + events.state.energy * 0.014;
+      this.grainPass.uniforms.u_scanline.value = 0.05 + events.state.shimmer * 0.05;
+      this.grainPass.uniforms.u_fringe.value = events.state.fringe * 0.24 + events.state.distortion * 0.14;
+    }
 
     this.rimLight.intensity = 10 + events.state.pulse * 4;
     this.warmLight.intensity = 7 + events.state.bass_hit * 4.2;
@@ -1406,6 +1806,8 @@ export class SpaceStationScene {
       this.updateTerminals(time, domDt);
     }
 
-    this.composer.render();
+    const renderStart = performance.now();
+    this.renderScene();
+    this.updatePerformanceBudget((performance.now() - renderStart) / 1000, frameDt);
   }
 }

@@ -5,6 +5,7 @@ import cmatrixCommand from './cmatrix.js';
 import echoCommand from './echo.js';
 import eqCommand from './eq.js';
 import exitCommand from './exit.js';
+import fxCommand from './fx.js';
 import freecamCommand from './freecam.js';
 import helpCommand from './help.js';
 import lsCommand from './ls.js';
@@ -20,6 +21,7 @@ const COMMAND_DEFINITIONS = [
   eqCommand,
   analCommand,
   cmatrixCommand,
+  fxCommand,
   freecamCommand,
   helpCommand,
   chshCommand,
@@ -37,6 +39,7 @@ export const COMMAND_TERMINAL_COMMANDS = [
   './anal',
   './cmatrix',
   './eq',
+  './fx',
   './freecam',
   'chsh',
   'clear',

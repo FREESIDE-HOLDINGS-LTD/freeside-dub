@@ -9,6 +9,7 @@ export default {
       'chsh [style]    - show or change shell style',
       'ls              - list files',
       'sh              - open another shell window',
+      './fx           - live editor for adaptive render settings',
     ];
   },
 };
