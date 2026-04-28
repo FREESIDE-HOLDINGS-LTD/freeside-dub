@@ -23,7 +23,7 @@ const QUALITY_PROFILES = [
     showVertices: false,
     showRegionEffects: false,
     showBackdropArcs: false,
-    starOpacity: 0.58,
+    starOpacity: 0.38,
     starCount: 2000,
   },
   {
@@ -38,7 +38,7 @@ const QUALITY_PROFILES = [
     showVertices: true,
     showRegionEffects: false,
     showBackdropArcs: true,
-    starOpacity: 0.76,
+    starOpacity: 0.50,
     starCount: 4000,
   },
   {
@@ -53,7 +53,7 @@ const QUALITY_PROFILES = [
     showVertices: true,
     showRegionEffects: true,
     showBackdropArcs: true,
-    starOpacity: 0.9,
+    starOpacity: 0.50,
     starCount: 5000,
   },
 ];
