@@ -1,121 +1,194 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { events } from './events.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 //import { FXAAShader } from 'three/addons/shaders/FXAAShader.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
-import { grainShader } from './grain.js';
-
-const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const WORLD_RIGHT = new THREE.Vector3(1, 0, 0);
-const WORLD_FORWARD = new THREE.Vector3(0, 0, 1);
-const MODEL_TARGET_LENGTH = 10;
-
-const CYAN = new THREE.Color(0x7ae7ff);
-const BLUE = new THREE.Color(0x6fa0ff);
-const PINK = new THREE.Color(0xff7ee1);
-const ORANGE = new THREE.Color(0xffa15c);
-
-const BOOT_TERMINAL_KEYMAP = {
-  w: 'WINDOWS',
-  m: 'MACOS',
-  l: 'LINUX',
-};
-
-const BOOT_TERMINAL_VARIANTS = {
-  WINDOWS: {
-    frameSrc: '/cmd_empty.png',
-    imageWidth: 1200,
-    imageHeight: 720,
-    offsetX: 4,
-    offsetY: 60,
-    insetRight: 20,
-    insetBottom: 2,
-    fontFamily: "Consolas, 'Lucida Console', 'Courier New', monospace",
-    textColor: '#c9c9c9',
-    fontSize: 'clamp(11px, 1.05vw, 17px)',
-    lineHeight: '1.2',
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { grainShader } from "./shader/grain.js";
+import { events } from "./events.js";
+import {
+  attachStationVisualMethods,
+  initializeStationVisualState,
+} from "./scene/station-visuals.js";
+import {
+  attachTerminalRuntimeMethods,
+  initializeTerminalRuntimeState,
+} from "./scene/terminal-runtime.js";
+const QUALITY_PROFILES = [
+  {
+    name: "low",
+    maxFps: 30,
+    pixelRatioCap: 0.38,
+    maxRenderPixels: 430000,
+    bloomDownscaleFactor: 0.42,
+    enableBloom: false,
+    enableGrain: true,
+    showPanelGlow: false,
+    showVertices: false,
+    showRegionEffects: false,
+    showBackdropArcs: false,
+    starOpacity: 0.38,
+    starCount: 2000,
   },
-  MACOS: {
-    frameSrc: '/macterm_empty.png',
-    imageWidth: 1364,
-    imageHeight: 966,
-    offsetX: 115,
-    offsetY: 135,
-    insetRight: 95,
-    insetBottom: 150,
-    fontFamily: "'SF Mono', 'Menlo', 'Monaco', 'Courier New', monospace",
-    textColor: '#f6f6f6',
-    fontSize: 'clamp(11px, 0.98vw, 16px)',
-    lineHeight: '1.28',
+  {
+    name: "medium",
+    maxFps: 48,
+    pixelRatioCap: 0.5,
+    maxRenderPixels: 620000,
+    bloomDownscaleFactor: 0.56,
+    enableBloom: true,
+    enableGrain: true,
+    showPanelGlow: false,
+    showVertices: true,
+    showRegionEffects: false,
+    showBackdropArcs: true,
+    starOpacity: 0.5,
+    starCount: 4000,
   },
-  LINUX: {
-    frameSrc: '/linuxterm_empty.png',
-    imageWidth: 1200,
-    imageHeight: 863,
-    offsetX: 15,
-    offsetY: 80,
-    insetRight: 18,
-    insetBottom: 20,
-    fontFamily: "'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace",
-    textColor: '#dddddd',
-    fontSize: 'clamp(11px, 1vw, 16px)',
-    lineHeight: '1.24',
+  {
+    name: "high",
+    maxFps: 90,
+    pixelRatioCap: 0.7,
+    maxRenderPixels: 960000,
+    bloomDownscaleFactor: 0.8,
+    enableBloom: true,
+    enableGrain: true,
+    showPanelGlow: true,
+    showVertices: true,
+    showRegionEffects: true,
+    showBackdropArcs: true,
+    starOpacity: 0.5,
+    starCount: 5000,
   },
-};
-
-function normalizeBootTerminalOs(value) {
-  const normalized = String(value || '').toUpperCase();
-
-  if (normalized === 'MACOS') return 'MACOS';
-  if (normalized === 'LINUX') return 'LINUX';
-
-  return 'WINDOWS';
-}
-
-function formatBootTimestamp(date) {
-  const weekday = date.toLocaleDateString('en-US', { weekday: 'short' });
-  const month = date.toLocaleDateString('en-US', { month: 'short' });
-  const day = date.toLocaleDateString('en-US', { day: '2-digit' });
-  const time = date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-
-  return `${weekday} ${month} ${day} ${time}`;
-}
+];
+const ADAPTIVE_RENDER_SETTING_DEFINITIONS = [
+  {
+    key: "maxFps",
+    label: "Target FPS",
+    type: "integer",
+    min: 1,
+    max: 120,
+    step: 2,
+    format: (value) => `${value} FPS`,
+    detail: "Frame cap for the scene update loop.",
+  },
+  {
+    key: "pixelRatioCap",
+    label: "Pixel Ratio Cap",
+    type: "number",
+    min: 0.1,
+    max: 1,
+    step: 0.05,
+    precision: 2,
+    format: (value) => `${value.toFixed(2)}x`,
+    detail: "Upper bound for internal render resolution scaling.",
+  },
+  {
+    key: "maxRenderPixels",
+    label: "Pixel Budget",
+    type: "integer",
+    min: 200000,
+    max: 1000000,
+    step: 20000,
+    format: (value) => `${Math.round(value / 1000)}K PX`,
+    detail: "Viewport pixel budget before the scene scales down.",
+  },
+  {
+    key: "bloomDownscaleFactor",
+    label: "Bloom Scale",
+    type: "number",
+    min: 0.0,
+    max: 1.0,
+    step: 0.02,
+    precision: 2,
+    format: (value) => `${value.toFixed(2)}x`,
+    detail: "Resolution factor used by the bloom pass.",
+  },
+  {
+    key: "enableBloom",
+    label: "Bloom Pass",
+    type: "boolean",
+    detail: "Enable or disable the bloom post-process pass.",
+  },
+  {
+    key: "enableGrain",
+    label: "Grain Pass",
+    type: "boolean",
+    detail: "Enable or disable the grain / fringe post-process pass.",
+  },
+  {
+    key: "showPanelGlow",
+    label: "Panel Glow",
+    type: "boolean",
+    detail: "Toggle additive glow planes on the station panels.",
+  },
+  {
+    key: "showVertices",
+    label: "Vertex Points",
+    type: "boolean",
+    detail: "Toggle point-cloud overlays on the station meshes.",
+  },
+  {
+    key: "showRegionEffects",
+    label: "Region Effects",
+    type: "boolean",
+    detail: "Toggle shader pulse and core effect meshes.",
+  },
+  {
+    key: "showBackdropArcs",
+    label: "Backdrop Arcs",
+    type: "boolean",
+    detail: "Toggle the large torus arc meshes behind the station.",
+  },
+  {
+    key: "starOpacity",
+    label: "Star Opacity",
+    type: "number",
+    min: 0.0,
+    max: 1,
+    step: 0.04,
+    precision: 2,
+    format: (value) => value.toFixed(2),
+    detail: "Opacity multiplier for the background starfield.",
+  },
+  {
+    key: "starCount",
+    label: "Star Count",
+    type: "integer",
+    min: 0,
+    max: 10000,
+    step: 200,
+    format: (value) => `${value}`,
+    detail: "Number of stars drawn from the shared star buffer.",
+  },
+];
+const ADAPTIVE_RENDER_SETTINGS_BY_KEY = new Map(
+  ADAPTIVE_RENDER_SETTING_DEFINITIONS.map((definition) => [
+    definition.key,
+    definition,
+  ]),
+);
 
 export class SpaceStationScene {
   constructor(canvasContainer, options = {}) {
     this.container = canvasContainer;
-    this.clock = new THREE.Clock();
+    this.clock = new THREE.Timer();
+    this.clock.connect(document);
     this.loader = new GLTFLoader();
-    this.telemetry = {
-      title: 'Signal telemetry',
-      status: 'STANDBY',
-      lines: [],
-    };
-    this.bootSequenceActive = false;
-    this.bootSequenceId = 0;
-    this.bootSequenceTimers = [];
-    this.pointerPosition = new THREE.Vector2(window.innerWidth * 0.5, window.innerHeight * 0.5);
-    this.pointerVelocity = new THREE.Vector2();
-    this.pointerActive = false;
-    this.bootTerminalFleeOffset = new THREE.Vector2();
-    this.defaultBootTerminalOs = normalizeBootTerminalOs(options.bootTerminalOs);
-    this.activeBootTerminalOs = this.defaultBootTerminalOs;
-    this.bootHotkeysEnabled = false;
+    initializeTerminalRuntimeState(this, options);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x01050a);
     this.scene.fog = new THREE.FogExp2(0x020812, 0.009);
 
-    this.camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 1600);
+    this.camera = new THREE.PerspectiveCamera(
+      50,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      1600,
+    );
     this.camera.position.set(0, 2, 24);
     this.cameraBasePosition = new THREE.Vector3(0, 2, 24);
     this.cameraTarget = new THREE.Vector3();
@@ -125,13 +198,26 @@ export class SpaceStationScene {
     this.renderer = new THREE.WebGLRenderer({
       antialias: false,
       alpha: false,
-      powerPreference: 'low-power',
+      powerPreference: "low-power",
+      stencil: false,
     });
-    this.pixelRatio = Math.min(window.devicePixelRatio, 0.5);
-    this.bloomDownscaleFactor = 0.75;
-    this.maxFps = 60;
+    this.qualityProfileIndex = this.getInitialQualityProfileIndex();
+    this.activeQualityProfile = QUALITY_PROFILES[this.qualityProfileIndex];
+    this.appliedQualityName = null;
+    this.pixelRatio = this.computePixelRatio(this.activeQualityProfile);
+    this.bloomDownscaleFactor = this.activeQualityProfile.bloomDownscaleFactor;
+    this.maxFps = this.activeQualityProfile.maxFps;
     this.frameInterval = 1 / this.maxFps;
     this.accumulatedDt = 0;
+    this.domUpdateInterval = 1 / 30;
+    this.domAccumulatedDt = 0;
+    this.performanceMonitor = {
+      smoothedRenderCost: this.frameInterval * 0.5,
+      evaluationTimer: 0,
+      recoveryTimer: 0,
+      switchCooldown: 0,
+    };
+    this.adaptiveQualityEditorSessions = 0;
     this.renderer.setPixelRatio(this.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -150,9 +236,9 @@ export class SpaceStationScene {
     this.composer.addPass(this.fxaaPass);*/
 
     this.bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor),
-      0.62,
-      0.55,
+      new THREE.Vector2(...this.getBloomRenderSize()),
+      0.34,
+      0.35,
       0.52,
     );
     this.bloomPass.threshold = 0.08;
@@ -172,76 +258,15 @@ export class SpaceStationScene {
     this.stationModelGroup = new THREE.Group();
     this.stationSpinGroup.add(this.stationModelGroup);
 
-    this.stationAxis = new THREE.Vector3(1, 0, 0);
-    this.stationPlaneU = new THREE.Vector3(0, 1, 0);
-    this.stationPlaneV = new THREE.Vector3(0, 0, 1);
-    this.stationSpinAngle = 0;
-
-    this.stationBounds = new THREE.Vector3(8, 5, 6);
-    this.stationLength = MODEL_TARGET_LENGTH;
-    this.stationRadius = 4.2;
-    this.baseModelScale = 1;
-    this.stationModel = null;
-
-    this.sharedPanelMaterial = new THREE.MeshBasicMaterial({
-      color: 0x010101,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-      depthWrite: true,
-      depthTest: true,
-      polygonOffset: true,
-      polygonOffsetFactor: 1,
-      polygonOffsetUnits: 1,
-    });
-    this.sharedInvisibleMaterial = new THREE.MeshBasicMaterial({
-      transparent: true,
-      opacity: 0,
-      toneMapped: false,
-      depthWrite: false,
-      depthTest: true,
-    });
-    this.sharedInvisibleMaterial.colorWrite = false;
-
-    this.wireMaterials = {
-      body: new THREE.LineBasicMaterial({ color: 0x5dd7ff, transparent: true, opacity: 0.36, toneMapped: false }),
-      panels: new THREE.LineBasicMaterial({ color: 0x7ae7ff, transparent: true, opacity: 0.48, toneMapped: false }),
-      core: new THREE.LineBasicMaterial({ color: 0xff89e2, transparent: true, opacity: 0.52, toneMapped: false }),
-      fore: new THREE.LineBasicMaterial({ color: 0x89d8ff, transparent: true, opacity: 0.45, toneMapped: false }),
-      aft: new THREE.LineBasicMaterial({ color: 0xffa76f, transparent: true, opacity: 0.52, toneMapped: false }),
-    };
-    this.vertexMaterials = {
-      body: new THREE.PointsMaterial({ color: 0x88ecff, size: 0.055, transparent: true, opacity: 0.42, toneMapped: false }),
-      core: new THREE.PointsMaterial({ color: 0xff97e6, size: 0.065, transparent: true, opacity: 0.64, toneMapped: false }),
-      fore: new THREE.PointsMaterial({ color: 0x9ce4ff, size: 0.06, transparent: true, opacity: 0.54, toneMapped: false }),
-      aft: new THREE.PointsMaterial({ color: 0xffb07a, size: 0.06, transparent: true, opacity: 0.6, toneMapped: false }),
-    };
-
-    this.panelEntries = [];
-    this.bodyWires = [];
-    this.coreWires = [];
-    this.foreWires = [];
-    this.aftWires = [];
-    this.bodyVertices = [];
-    this.coreVertices = [];
-    this.foreVertices = [];
-    this.aftVertices = [];
-    this.coreEffects = [];
-    this.foreEffects = [];
-    this.aftEffects = [];
-
-    this.tempPoint = new THREE.Vector3();
-    this.tempRadial = new THREE.Vector3();
-    this.tempDummy = new THREE.Object3D();
-    this.tempBox = new THREE.Box3();
+    initializeStationVisualState(this);
 
     this.setupLighting();
     this.createBackground();
     this.createTelemetryHud();
-    this.createBootSequenceOverlay();
     this.loadStationModel();
     this.setupEventListeners();
-
-    this.composer.render();
+    this.applyQualityProfile(true);
+    this.renderScene();
   }
 
   setupLighting() {
@@ -252,17 +277,15 @@ export class SpaceStationScene {
     this.keyLight.position.set(12, 14, 14);
     this.scene.add(this.keyLight);
 
-    this.rimLight = new THREE.PointLight(0x64dcff, 12, 120);
-    this.rimLight.position.set(-10, 7, 16);
-    this.scene.add(this.rimLight);
-
-    this.warmLight = new THREE.PointLight(0xff955f, 8, 100);
-    this.warmLight.position.set(-8, -4, -10);
-    this.scene.add(this.warmLight);
-
-    this.fillLight = new THREE.PointLight(0x6d8eff, 7, 90);
-    this.fillLight.position.set(6, 3, -8);
-    this.scene.add(this.fillLight);
+    for (const [name, color, intensity, distance, pos] of [
+      ["rimLight", 0x64dcff, 12, 120, [-10, 7, 16]],
+      ["warmLight", 0xff955f, 8, 100, [-8, -4, -10]],
+      ["fillLight", 0x6d8eff, 7, 90, [6, 3, -8]],
+    ]) {
+      const light = new THREE.PointLight(color, intensity, distance);
+      light.position.set(...pos);
+      this.scene.add((this[name] = light));
+    }
   }
 
   createBackground() {
@@ -279,19 +302,27 @@ export class SpaceStationScene {
       positions[i * 3 + 1] = radius * Math.cos(phi);
       positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
 
-      const color = new THREE.Color().setHSL(0.56 + Math.random() * 0.08, 0.42, 0.72 + Math.random() * 0.16);
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
+      new THREE.Color()
+        .setHSL(0.56 + Math.random() * 0.08, 0.42, 0.72 + Math.random() * 0.16)
+        .toArray(colors, i * 3);
     }
 
     const starGeometry = new THREE.BufferGeometry();
-    starGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    starGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    starGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(positions, 3),
+    );
+    starGeometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
     this.starfield = new THREE.Points(
       starGeometry,
-      new THREE.PointsMaterial({ size: 1.45, vertexColors: true, transparent: true, opacity: 0.9, fog: false }),
+      new THREE.PointsMaterial({
+        size: 1.45,
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.9,
+        fog: false,
+      }),
     );
     this.starfield.frustumCulled = false;
     this.scene.add(this.starfield);
@@ -299,7 +330,7 @@ export class SpaceStationScene {
     this.backdropArcs = new THREE.Group();
     [32, 44, 58].forEach((radius, index) => {
       const arc = new THREE.Mesh(
-        new THREE.TorusGeometry(radius, 0.06, 8, 128),
+        new THREE.TorusGeometry(radius, 0.15, 8, 48),
         new THREE.MeshBasicMaterial({
           color: index === 1 ? 0xff90e8 : 0x59d6ff,
           transparent: true,
@@ -315,807 +346,322 @@ export class SpaceStationScene {
     this.scene.add(this.backdropArcs);
   }
 
-  createTelemetryHud() {
-    this.telemetryRoot = document.createElement('div');
-    this.telemetryRoot.className = 'runtime-terminal';
+  getInitialQualityProfileIndex() {
+    const viewportPixels = window.innerWidth * window.innerHeight;
 
-    this.telemetryHeader = document.createElement('div');
-    this.telemetryHeader.className = 'runtime-terminal__header';
-
-    this.telemetryTitle = document.createElement('span');
-    this.telemetryStatus = document.createElement('span');
-    this.telemetryStatus.className = 'runtime-terminal__status';
-    this.telemetryHeader.append(this.telemetryTitle, this.telemetryStatus);
-
-    this.telemetryBody = document.createElement('div');
-    this.telemetryBody.className = 'runtime-terminal__body';
-
-    this.telemetryRoot.append(this.telemetryHeader, this.telemetryBody);
-    this.container.appendChild(this.telemetryRoot);
-    this.renderTelemetryHud();
+    if (viewportPixels > 3000000) return 0;
+    if (viewportPixels > 1500000) return 1;
+    return 2;
   }
 
-  createBootSequenceOverlay() {
-    this.bootTerminalRoot = document.createElement('div');
-    this.bootTerminalRoot.className = 'startup-terminal hidden';
-    this.bootTerminalRoot.setAttribute('aria-hidden', 'true');
+  computePixelRatio(profile = this.activeQualityProfile) {
+    const viewportPixels = Math.max(1, window.innerWidth * window.innerHeight);
+    const deviceRatio = Math.min(window.devicePixelRatio || 1, 1);
+    const budgetScale = Math.sqrt(profile.maxRenderPixels / viewportPixels);
 
-    this.bootTerminalFrame = document.createElement('img');
-    this.bootTerminalFrame.className = 'startup-terminal__frame';
-    this.bootTerminalFrame.src = '/cmd_empty.png';
-    this.bootTerminalFrame.alt = '';
-
-    this.bootTerminalViewport = document.createElement('div');
-    this.bootTerminalViewport.className = 'startup-terminal__viewport';
-
-    this.bootTerminalBody = document.createElement('div');
-    this.bootTerminalBody.className = 'startup-terminal__body';
-
-    this.bootTerminalViewport.append(this.bootTerminalBody);
-    this.bootTerminalRoot.append(this.bootTerminalFrame, this.bootTerminalViewport);
-    this.container.appendChild(this.bootTerminalRoot);
-    this.applyBootTerminalVariant(this.activeBootTerminalOs);
-  }
-
-  renderTelemetryHud() {
-    this.telemetryTitle.textContent = this.telemetry.title;
-    this.telemetryStatus.textContent = this.telemetry.status;
-    this.telemetryBody.replaceChildren();
-
-    this.telemetry.lines.forEach((line) => {
-      const entry = document.createElement('div');
-      entry.className = 'runtime-terminal__line';
-      entry.textContent = line;
-      this.telemetryBody.append(entry);
-    });
-  }
-
-  setTelemetry(telemetry) {
-    this.telemetry = {
-      title: telemetry?.title || 'Signal telemetry',
-      status: telemetry?.status || 'STANDBY',
-      lines: Array.isArray(telemetry?.lines) ? telemetry.lines : [],
-      bootLines: Array.isArray(telemetry?.bootLines) ? telemetry.bootLines : [],
-    };
-    this.renderTelemetryHud();
-  }
-
-  setTelemetryVisible(isVisible) {
-    if (!this.telemetryRoot) return;
-    this.telemetryRoot.classList.toggle('visible', isVisible);
-  }
-
-  setBootTerminalOs(bootTerminalOs) {
-    this.defaultBootTerminalOs = normalizeBootTerminalOs(bootTerminalOs);
-
-    if (!this.bootSequenceActive) {
-      this.activeBootTerminalOs = this.defaultBootTerminalOs;
-      this.applyBootTerminalVariant(this.activeBootTerminalOs);
-    }
-  }
-
-  enableBootTerminalHotkeys() {
-    this.bootHotkeysEnabled = true;
-  }
-
-  applyBootTerminalVariant(bootTerminalOs) {
-    if (!this.bootTerminalRoot || !this.bootTerminalFrame) return;
-
-    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
-    const variant = BOOT_TERMINAL_VARIANTS[normalizedOs];
-
-    this.activeBootTerminalOs = normalizedOs;
-    this.bootTerminalFrame.src = variant.frameSrc;
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-aspect-ratio', `${variant.imageWidth} / ${variant.imageHeight}`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-left', `${(variant.offsetX / variant.imageWidth) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-top', `${(variant.offsetY / variant.imageHeight) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-right', `${(variant.insetRight / variant.imageWidth) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-content-bottom', `${(variant.insetBottom / variant.imageHeight) * 100}%`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-family', variant.fontFamily);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-color', variant.textColor);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-font-size', variant.fontSize);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-line-height', variant.lineHeight);
-  }
-
-  buildWindowsBootSequence(normalizedTitle, fingerprintLines) {
-    return [
-      'Microsoft Windows [Version 10.0.19045.4291]',
-      '(c) Microsoft Corporation. All rights reserved.',
-      '',
-      'C:\\>cd Windows\\freeside',
-      'C:\\Windows\\freeside>',
-      'C:\\Windows\\freeside>fingerprint.exe /quiet /ua /hooks /ext',
-      ...fingerprintLines,
-      'Probe   browser shell ........ slightly cursed',
-      'C:\\Windows\\freeside>uplink.exe /fast /shadowMount /spoof',
-      `Connected to ${normalizedTitle}`,
-      'Mount   \\\\.\\relay\\upload ...... OK',
-      'C:\\Windows\\freeside>dump.bat',
-      'scanning...',
-      '',
-      'envs ................... DONE',
-      'mem dump ............... DONE',
-      'browser session ........ DONE',
-      'system keyring ......... DONE',
-      'Access denied - C:\\Windows\\pagefile.sys',
-      'Access denied - C:\\Windows\\swapfile.sys',
-      'Access denied - C:\\Windows\\system32',
-      'elevating to SYSTEM .................... nailed it.',
-      'wallets ................ DONE',
-      'cookies ................ DONE',
-      '',
-      'zipping...',
-      '',
-      'upload target: \\\\.\\relay\\upload',
-      'uploading .............. 12%',
-      'uploading .............. 29%',
-      'uploading .............. 51%',
-      'uploading .............. 92%',
-      '',
-      'cleaning up ............. OK',
-      'C:\\>exit',
-    ];
-  }
-
-  buildMacBootSequence(normalizedTitle, fingerprintLines) {
-    const loginStamp = formatBootTimestamp(new Date());
-
-    return [
-      `Last login: ${loginStamp} on console`,
-      'root@localhost ~ % cd /Volumes/Freeside',
-      'root@localhost Freeside % ./fingerprint --quiet --ua --hooks --ext',
-      ...fingerprintLines,
-      'probe.shell = Terminal.app / zsh',
-      'root@localhost Freeside % ./uplink --fast --shadow-mount --spoof',
-      `connected -> ${normalizedTitle}`,
-      'mount /Volumes/relay/upload ........ ok',
-      'root@localhost Freeside % ./dump.sh',
-      'scanning...',
-      '',
-      'launch agents ................. done',
-      'memory pages .................. done',
-      'browser session ............... done',
-      'keychain sweep ................ done',
-      '/System/Library: Operation not permitted',
-      '/private/var/vm/sleepimage: Operation not permitted',
-      '/private/var/vm/swapfile0: Operation not permitted',
-      'sudo escalation ........................ accepted.',
-      'wallets ....................... done',
-      'cookies ....................... done',
-      '',
-      'compressing...',
-      '',
-      'upload target: /Volumes/relay/upload',
-      'uploading ..................... 14%',
-      'uploading ..................... 33%',
-      'uploading ..................... 57%',
-      'uploading ..................... 95%',
-      '',
-      'cleanup ....................... ok',
-      'root@localhost Freeside % exit',
-    ];
-  }
-
-  buildLinuxBootSequence(normalizedTitle, fingerprintLines) {
-    return [
-      'root@localhost:~$ cd /opt/freeside',
-      'root@localhost:/opt/freeside$ ./fingerprint --quiet --ua --hooks --ext',
-      ...fingerprintLines,
-      'probe.shell = bash',
-      'root@localhost:/opt/freeside$ ./uplink --fast --shadow-mount --spoof',
-      `connected -> ${normalizedTitle}`,
-      'mount /mnt/relay/upload ............ ok',
-      'root@localhost:/opt/freeside$ ./dump.sh',
-      'scanning...',
-      '',
-      'env snapshots ...................... done',
-      'memory scrape ...................... done',
-      'browser session .................... done',
-      'credential store ................... done',
-      '/etc/shadow: Permission denied',
-      '/proc/kcore: Permission denied',
-      '/root: Permission denied',
-      'sudo escalation ........................ acquired.',
-      'wallets ............................ done',
-      'cookies ............................ done',
-      '',
-      'compressing...',
-      '',
-      'upload target: /mnt/relay/upload',
-      'uploading .......................... 11%',
-      'uploading .......................... 36%',
-      'uploading .......................... 63%',
-      'uploading .......................... 97%',
-      '',
-      'cleanup ............................ ok',
-      'root@localhost:/opt/freeside$ exit',
-    ];
-  }
-
-  buildBootSequence(bootTerminalOs = this.activeBootTerminalOs) {
-    const normalizedTitle = (this.telemetry.title || 'SIGNAL TELEMETRY').toUpperCase();
-    const fingerprintLines = this.telemetry.bootLines.slice(0, 10);
-    const normalizedOs = normalizeBootTerminalOs(bootTerminalOs);
-
-    if (normalizedOs === 'MACOS') {
-      return this.buildMacBootSequence(normalizedTitle, fingerprintLines);
-    }
-
-    if (normalizedOs === 'LINUX') {
-      return this.buildLinuxBootSequence(normalizedTitle, fingerprintLines);
-    }
-
-    return this.buildWindowsBootSequence(normalizedTitle, fingerprintLines);
-  }
-
-  appendBootSequenceLine(line) {
-    const entry = document.createElement('div');
-    entry.className = 'startup-terminal__line';
-    entry.textContent = line;
-    this.bootTerminalBody.append(entry);
-
-    const maxScroll = Math.max(0, this.bootTerminalViewport.scrollHeight - this.bootTerminalViewport.clientHeight);
-    if (maxScroll > 0) {
-      this.bootTerminalViewport.scrollTop = maxScroll;
-    }
-  }
-
-  clearBootSequenceTimers() {
-    this.bootSequenceTimers.forEach((timerId) => window.clearTimeout(timerId));
-    this.bootSequenceTimers = [];
-  }
-
-  playStartupTerminal(bootTerminalOs = this.defaultBootTerminalOs) {
-    if (!this.bootTerminalRoot || !this.bootTerminalViewport) return;
-
-    this.applyBootTerminalVariant(bootTerminalOs);
-    this.bootSequenceId += 1;
-    const sequenceId = this.bootSequenceId;
-    const lines = this.buildBootSequence(this.activeBootTerminalOs);
-    const lineDelay = 100;
-    const closeDelay = lines.length * lineDelay + 2000;
-
-    this.clearBootSequenceTimers();
-    this.bootTerminalBody.replaceChildren();
-    this.bootSequenceActive = true;
-    this.bootTerminalFleeOffset.set(0, 0);
-    this.bootTerminalViewport.scrollTop = 0;
-    this.bootTerminalRoot.classList.remove('hidden', 'closing');
-    this.bootTerminalRoot.classList.add('visible');
-
-    lines.forEach((line, index) => {
-      const timerId = window.setTimeout(() => {
-        if (this.bootSequenceId !== sequenceId) return;
-        this.appendBootSequenceLine(line);
-      }, index * lineDelay);
-      this.bootSequenceTimers.push(timerId);
-    });
-
-    this.bootSequenceTimers.push(window.setTimeout(() => {
-      if (this.bootSequenceId !== sequenceId) return;
-      this.bootTerminalRoot.classList.add('closing');
-    }, closeDelay));
-
-    this.bootSequenceTimers.push(window.setTimeout(() => {
-      if (this.bootSequenceId !== sequenceId) return;
-      this.bootSequenceActive = false;
-      this.bootTerminalRoot.classList.remove('visible', 'closing');
-      this.bootTerminalRoot.classList.add('hidden');
-      this.bootTerminalBody.replaceChildren();
-    }, closeDelay + 220));
-  }
-
-  loadStationModel() {
-    this.loader.load(
-      '/station.glb',
-      (gltf) => this.setStationModel(gltf.scene),
-      undefined,
-      (error) => {
-        console.error('Failed to load /station.glb', error);
-      },
+    return THREE.MathUtils.clamp(
+      Math.min(deviceRatio, profile.pixelRatioCap, budgetScale),
+      0.32,
+      profile.pixelRatioCap,
     );
   }
 
-  setStationModel(model) {
-    this.stationModelGroup.clear();
-    this.panelEntries = [];
-    this.bodyWires = [];
-    this.coreWires = [];
-    this.foreWires = [];
-    this.aftWires = [];
-    this.bodyVertices = [];
-    this.coreVertices = [];
-    this.foreVertices = [];
-    this.aftVertices = [];
-    this.coreEffects = [];
-    this.foreEffects = [];
-    this.aftEffects = [];
-
-    const box = new THREE.Box3().setFromObject(model);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const longest = Math.max(size.x, size.y, size.z) || 1;
-    const scale = MODEL_TARGET_LENGTH / longest;
-
-    model.position.sub(center);
-    model.scale.setScalar(scale);
-    model.updateMatrixWorld(true);
-
-    this.stationModel = model;
-    this.stationModelGroup.add(model);
-
-    this.stationBounds.copy(size).multiplyScalar(scale);
-    this.baseModelScale = scale;
-    this.stationLength = Math.max(this.stationBounds.x, this.stationBounds.y, this.stationBounds.z);
-    const sortedBounds = [this.stationBounds.x, this.stationBounds.y, this.stationBounds.z].sort((a, b) => b - a);
-    this.stationRadius = Math.max(2.8, (sortedBounds[1] + sortedBounds[2]) * 0.3 + 0.8);
-    this.stationAxis.copy(this.computeBodyAxis(model));
-    this.updateAxisBasis();
-    this.buildStationPresentation();
-    this.fitCameraToStation();
-  }
-
-  isPanelMesh(scaledSize) {
-    const sortedSize = [scaledSize.x, scaledSize.y, scaledSize.z].sort((a, b) => a - b);
-    const minDim = sortedSize[0];
-    const midDim = sortedSize[1];
-    const maxDim = sortedSize[2];
-
-    return maxDim > 3 && midDim / maxDim < 0.08 && minDim / maxDim < 0.02;
-  }
-
-  computeBodyAxis(model) {
-    const covariance = [
-      [0, 0, 0],
-      [0, 0, 0],
-      [0, 0, 0],
+  getBloomRenderSize() {
+    return [
+      Math.max(
+        1,
+        Math.round(
+          window.innerWidth * this.pixelRatio * this.bloomDownscaleFactor,
+        ),
+      ),
+      Math.max(
+        1,
+        Math.round(
+          window.innerHeight * this.pixelRatio * this.bloomDownscaleFactor,
+        ),
+      ),
     ];
-    const transformed = new THREE.Vector3();
-    const localPoint = new THREE.Vector3();
-    const direction = new THREE.Vector3(1, 0, 0);
-    const spinLocalInverse = new THREE.Matrix4().copy(this.stationSpinGroup.matrixWorld).invert();
-    let sampleCount = 0;
+  }
 
-    model.updateMatrixWorld(true);
+  applyRenderResolution() {
+    this.pixelRatio = this.computePixelRatio(this.activeQualityProfile);
+    this.renderer.setPixelRatio(this.pixelRatio);
+    this.composer.setPixelRatio(this.pixelRatio);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    this.bloomPass.setSize(...this.getBloomRenderSize());
+  }
 
-    model.traverse((child) => {
-      if (!child.isMesh) return;
-
-      const scaledSize = new THREE.Box3().setFromObject(child).getSize(new THREE.Vector3());
-      if (this.isPanelMesh(scaledSize)) return;
-
-      const position = child.geometry.attributes.position;
-      if (!position) return;
-
-      for (let i = 0; i < position.count; i += 3) {
-        transformed.fromBufferAttribute(position, i).applyMatrix4(child.matrixWorld);
-        localPoint.copy(transformed).applyMatrix4(spinLocalInverse);
-        covariance[0][0] += localPoint.x * localPoint.x;
-        covariance[0][1] += localPoint.x * localPoint.y;
-        covariance[0][2] += localPoint.x * localPoint.z;
-        covariance[1][0] += localPoint.y * localPoint.x;
-        covariance[1][1] += localPoint.y * localPoint.y;
-        covariance[1][2] += localPoint.y * localPoint.z;
-        covariance[2][0] += localPoint.z * localPoint.x;
-        covariance[2][1] += localPoint.z * localPoint.y;
-        covariance[2][2] += localPoint.z * localPoint.z;
-        sampleCount++;
-      }
+  setCollectionVisibility(items, isVisible) {
+    items.forEach((item) => {
+      const target = item?.mesh || item;
+      if (target) target.visible = isVisible;
     });
+  }
 
-    if (sampleCount === 0) return new THREE.Vector3(1, 0, 0);
+  applyQualityProfile(force = false) {
+    const profile = QUALITY_PROFILES[this.qualityProfileIndex];
+    if (!force && this.appliedQualityName === profile.name) return;
 
-    for (let iteration = 0; iteration < 12; iteration++) {
-      const x = covariance[0][0] * direction.x + covariance[0][1] * direction.y + covariance[0][2] * direction.z;
-      const y = covariance[1][0] * direction.x + covariance[1][1] * direction.y + covariance[1][2] * direction.z;
-      const z = covariance[2][0] * direction.x + covariance[2][1] * direction.y + covariance[2][2] * direction.z;
-      direction.set(x, y, z).normalize();
+    this.activeQualityProfile = profile;
+    this.appliedQualityName = profile.name;
+    this.bloomDownscaleFactor = profile.bloomDownscaleFactor;
+    this.maxFps = profile.maxFps;
+    this.frameInterval = 1 / this.maxFps;
+
+    if (this.renderer && this.composer && this.bloomPass) {
+      this.applyRenderResolution();
     }
 
-    return direction.normalize();
-  }
-
-  buildStationPresentation() {
-    this.stationModel.updateMatrixWorld(true);
-
-    this.stationModel.traverse((child) => {
-      if (!child.isMesh) return;
-
-      const geometry = child.geometry;
-      if (!geometry.boundingBox) geometry.computeBoundingBox();
-
-      const localSize = geometry.boundingBox.getSize(new THREE.Vector3());
-      const scaledSize = new THREE.Box3().setFromObject(child).getSize(new THREE.Vector3());
-      const isPanel = this.isPanelMesh(scaledSize);
-
-      const material = isPanel ? this.sharedPanelMaterial : this.sharedInvisibleMaterial;
-      child.material = Array.isArray(child.material) ? child.material.map(() => material) : material;
-      child.renderOrder = isPanel ? 2 : 1;
-
-      const worldBox = this.tempBox.setFromObject(child);
-      const worldCenter = worldBox.getCenter(new THREE.Vector3());
-      const localCenter = this.stationModel.worldToLocal(worldCenter.clone());
-      const axial = localCenter.dot(this.stationAxis);
-
-      let wireMaterial = this.wireMaterials.body;
-      if (isPanel) {
-        wireMaterial = this.wireMaterials.panels;
-      } else if (Math.abs(axial) < this.stationLength * 0.16) {
-        wireMaterial = this.wireMaterials.core;
-      } else if (axial > 0) {
-        wireMaterial = this.wireMaterials.fore;
-      } else {
-        wireMaterial = this.wireMaterials.aft;
-      }
-
-      const wire = new THREE.LineSegments(new THREE.WireframeGeometry(geometry), wireMaterial);
-      wire.renderOrder = 4;
-      child.add(wire);
-
-      if (isPanel) {
-        this.panelEntries.push(this.createPanelOverlay(child, localSize));
-      } else if (wireMaterial === this.wireMaterials.core) {
-        this.coreWires.push(wire);
-        this.coreVertices.push(this.createVertexLayer(child, this.vertexMaterials.core));
-        this.createAttachedEffect(child, localSize, 'core');
-      } else if (wireMaterial === this.wireMaterials.fore) {
-        this.foreWires.push(wire);
-        this.foreVertices.push(this.createVertexLayer(child, this.vertexMaterials.fore));
-        this.createAttachedEffect(child, localSize, 'fore');
-      } else if (wireMaterial === this.wireMaterials.aft) {
-        this.aftWires.push(wire);
-        this.aftVertices.push(this.createVertexLayer(child, this.vertexMaterials.aft));
-        this.createAttachedEffect(child, localSize, 'aft');
-      } else {
-        this.bodyWires.push(wire);
-        this.bodyVertices.push(this.createVertexLayer(child, this.vertexMaterials.body));
-      }
-    });
-  }
-
-  createVertexLayer(mesh, material) {
-    const vertices = new THREE.Points(mesh.geometry, material);
-    vertices.renderOrder = 6;
-    mesh.add(vertices);
-    return vertices;
-  }
-
-  createAttachedEffect(mesh, localSize, region) {
-    const size = Math.max(localSize.x, localSize.y, localSize.z);
-    if (size < 0.35) return;
-
-    const center = mesh.geometry.boundingBox.getCenter(new THREE.Vector3());
-    let effect;
-
-    if (region === 'core') {
-      effect = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(Math.max(0.04, size * 0.12), 0),
-        new THREE.MeshBasicMaterial({ color: 0xff90e8, transparent: true, opacity: 0.22, toneMapped: false }),
-      );
-      this.coreEffects.push(effect);
-    } else if (region === 'fore') {
-      effect = new THREE.Mesh(
-        new THREE.TorusGeometry(Math.max(0.06, size * 0.18), Math.max(0.01, size * 0.035), 8, 24),
-        new THREE.MeshBasicMaterial({ color: 0x8de5ff, transparent: true, opacity: 0.16, toneMapped: false }),
-      );
-      this.foreEffects.push(effect);
-    } else {
-      effect = new THREE.Mesh(
-        new THREE.OctahedronGeometry(Math.max(0.05, size * 0.14), 0),
-        new THREE.MeshBasicMaterial({ color: 0xffa160, transparent: true, opacity: 0.2, toneMapped: false }),
-      );
-      this.aftEffects.push(effect);
+    if (this.starfield) {
+      this.starfield.material.opacity = profile.starOpacity;
+      this.starfield.geometry.setDrawRange(0, profile.starCount);
     }
 
-    effect.position.copy(center);
-    effect.renderOrder = 7;
-    mesh.add(effect);
+    if (this.backdropArcs) {
+      this.backdropArcs.visible = profile.showBackdropArcs;
+    }
+
+    this.stationRegionList.forEach((region) => {
+      this.setCollectionVisibility(region.vertices, profile.showVertices);
+      this.setCollectionVisibility(region.effects, profile.showRegionEffects);
+    });
+    this.panelEntries.forEach((entry) => {
+      entry.frontMesh.visible = profile.showPanelGlow;
+      entry.backMesh.visible = profile.showPanelGlow;
+    });
   }
 
-  createPanelOverlay(mesh, localSize) {
-    const dims = [localSize.x, localSize.y, localSize.z];
-    const thicknessAxis = dims.indexOf(Math.min(...dims));
-    const planeAxes = [0, 1, 2].filter((axis) => axis !== thicknessAxis);
-    const width = dims[planeAxes[0]] * 1.02;
-    const height = dims[planeAxes[1]] * 1.02;
-    const glowMaterial = new THREE.MeshBasicMaterial({
-      color: 0x84ebff,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-      toneMapped: false,
-    });
+  getCurrentQualityProfile() {
+    return QUALITY_PROFILES[this.qualityProfileIndex];
+  }
 
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, height), glowMaterial);
-    const offset = Math.max(0.015, dims[thicknessAxis] * 0.9);
+  beginAdaptiveRenderEditing() {
+    this.adaptiveQualityEditorSessions += 1;
+  }
 
-    if (thicknessAxis === 0) plane.rotation.y = Math.PI / 2;
-    if (thicknessAxis === 1) plane.rotation.x = -Math.PI / 2;
-
-    plane.position.set(
-      thicknessAxis === 0 ? offset : 0,
-      thicknessAxis === 1 ? offset : 0,
-      thicknessAxis === 2 ? offset : 0,
+  endAdaptiveRenderEditing() {
+    this.adaptiveQualityEditorSessions = Math.max(
+      0,
+      this.adaptiveQualityEditorSessions - 1,
     );
-    plane.renderOrder = 5;
-    mesh.add(plane);
+  }
 
-    const planeBack = plane.clone();
-    planeBack.material = glowMaterial.clone();
-    planeBack.position.multiplyScalar(-1);
-    planeBack.renderOrder = 5;
-    mesh.add(planeBack);
+  formatAdaptiveRenderSettingValue(definition, value) {
+    if (typeof definition.format === "function") {
+      return definition.format(value);
+    }
+
+    if (definition.type === "boolean") {
+      return value ? "ON" : "OFF";
+    }
+
+    return String(value);
+  }
+
+  getAdaptiveRenderEditorSnapshot() {
+    const profile = this.getCurrentQualityProfile();
+    const renderWidth = Math.max(
+      1,
+      Math.round(window.innerWidth * this.pixelRatio),
+    );
+    const renderHeight = Math.max(
+      1,
+      Math.round(window.innerHeight * this.pixelRatio),
+    );
+    const renderCostMs = this.performanceMonitor.smoothedRenderCost * 1000;
+    const activePasses = [
+      this.bloomPass.enabled ? "BLOOM" : null,
+      this.grainPass.enabled ? "GRAIN" : null,
+    ].filter(Boolean);
 
     return {
-      mesh,
-      frontMaterial: glowMaterial,
-      backMaterial: planeBack.material,
+      profileName: profile.name.toUpperCase(),
+      runtimeLines: [
+        `PROFILE ${profile.name.toUpperCase()}  FPS ${this.maxFps.toString().padStart(2, "0")}  RES ${this.pixelRatio.toFixed(2)}x`,
+        `FRAME ${renderCostMs.toFixed(2).padStart(6, " ")} MS  SIZE ${renderWidth}x${renderHeight}`,
+        `PASSES ${(activePasses.join(" + ") || "RAW").padEnd(13, " ")}  AUTO ${this.adaptiveQualityEditorSessions > 0 ? "PAUSED" : "LIVE"}`,
+      ],
+      controls: ADAPTIVE_RENDER_SETTING_DEFINITIONS.map((definition) => {
+        const value = profile[definition.key];
+
+        return {
+          id: definition.key,
+          label: definition.label,
+          valueText: this.formatAdaptiveRenderSettingValue(definition, value),
+          detail: definition.detail,
+        };
+      }),
     };
   }
 
-  updateAxisBasis() {
-    const reference = Math.abs(this.stationAxis.dot(WORLD_UP)) > 0.92 ? WORLD_RIGHT : WORLD_UP;
-    this.stationPlaneU.crossVectors(reference, this.stationAxis).normalize();
-    this.stationPlaneV.crossVectors(this.stationAxis, this.stationPlaneU).normalize();
-  }
+  adjustAdaptiveRenderSetting(settingId, direction = 1) {
+    const definition = ADAPTIVE_RENDER_SETTINGS_BY_KEY.get(settingId);
+    if (!definition) return false;
 
-  fitCameraToStation() {
-    const maxDimension = Math.max(this.stationBounds.x, this.stationBounds.y, this.stationBounds.z, 1);
-    const fov = THREE.MathUtils.degToRad(this.camera.fov);
-    const distance = (maxDimension * 0.5) / Math.tan(fov * 0.5);
-    const framedDistance = distance * 1;
+    const profile = this.getCurrentQualityProfile();
+    const currentValue = profile[definition.key];
+    let nextValue = currentValue;
 
-    this.cameraBasePosition.set(0, Math.max(1.8, this.stationBounds.y * 0.14), framedDistance);
-    this.cameraTarget.set(0, 0, 0);
-    this.camera.position.copy(this.cameraBasePosition);
-    this.camera.lookAt(this.cameraTarget);
-  }
-
-  setupEventListeners() {
-    window.addEventListener('resize', () => this.onResize());
-    window.addEventListener('pointermove', (event) => this.onPointerMove(event));
-    window.addEventListener('keydown', (event) => this.onKeyDown(event));
-    window.addEventListener('pointerout', (event) => {
-      if (!event.relatedTarget) {
-        this.pointerActive = false;
-        this.pointerVelocity.set(0, 0);
-      }
-    });
-  }
-
-  onPointerMove(event) {
-    const { clientX, clientY } = event;
-
-    if (this.pointerActive) {
-      this.pointerVelocity.set(clientX - this.pointerPosition.x, clientY - this.pointerPosition.y);
+    if (definition.type === "boolean") {
+      nextValue = !currentValue;
     } else {
-      this.pointerVelocity.set(0, 0);
+      const stepDirection = Math.sign(direction) || 1;
+      nextValue = currentValue + definition.step * stepDirection;
+      if (definition.type === "integer") {
+        nextValue = Math.round(nextValue);
+      }
+      if (Number.isFinite(definition.min)) {
+        nextValue = Math.max(definition.min, nextValue);
+      }
+      if (Number.isFinite(definition.max)) {
+        nextValue = Math.min(definition.max, nextValue);
+      }
+      if (Number.isFinite(definition.precision)) {
+        nextValue = Number(nextValue.toFixed(definition.precision));
+      }
     }
 
-    this.pointerPosition.set(clientX, clientY);
-    this.pointerActive = true;
+    if (nextValue === currentValue) return false;
+
+    profile[definition.key] = nextValue;
+    this.applyQualityProfile(true);
+    return true;
   }
 
-  onKeyDown(event) {
-    if (!this.bootHotkeysEnabled || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+  updatePerformanceBudget(renderCost, dt) {
+    const monitor = this.performanceMonitor;
+    monitor.smoothedRenderCost = THREE.MathUtils.lerp(
+      monitor.smoothedRenderCost,
+      renderCost,
+      0.12,
+    );
+    monitor.evaluationTimer += dt;
+    monitor.switchCooldown = Math.max(0, monitor.switchCooldown - dt);
 
-    const bootTerminalOs = BOOT_TERMINAL_KEYMAP[event.key?.toLowerCase()];
-    if (!bootTerminalOs) return;
+    const upgradeThreshold = this.frameInterval * 0.45;
+    if (monitor.smoothedRenderCost < upgradeThreshold) {
+      monitor.recoveryTimer += dt;
+    } else {
+      monitor.recoveryTimer = 0;
+    }
 
-    event.preventDefault();
-    this.playStartupTerminal(bootTerminalOs);
+    if (this.adaptiveQualityEditorSessions > 0) {
+      monitor.evaluationTimer = 0;
+      monitor.recoveryTimer = 0;
+      return;
+    }
+
+    if (monitor.evaluationTimer < 1.5 || monitor.switchCooldown > 0) return;
+    monitor.evaluationTimer = 0;
+
+    const overloaded = monitor.smoothedRenderCost > this.frameInterval * 0.9;
+    if (overloaded && this.qualityProfileIndex > 0) {
+      this.qualityProfileIndex -= 1;
+      monitor.recoveryTimer = 0;
+      monitor.switchCooldown = 2.5;
+      this.applyQualityProfile();
+      return;
+    }
+
+    if (
+      monitor.recoveryTimer >= 6 &&
+      this.qualityProfileIndex < QUALITY_PROFILES.length - 1
+    ) {
+      this.qualityProfileIndex += 1;
+      monitor.recoveryTimer = 0;
+      monitor.switchCooldown = 4;
+      this.applyQualityProfile();
+    }
+  }
+
+  renderScene() {
+    if (this.bloomPass.enabled || this.grainPass.enabled) {
+      this.composer.render();
+      return;
+    }
+
+    this.renderer.render(this.scene, this.camera);
   }
 
   onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.composer.setSize(window.innerWidth, window.innerHeight);
-    /*this.fxaaPass.uniforms.resolution.value.set(
-      1 / (window.innerWidth * this.pixelRatio),
-      1 / (window.innerHeight * this.pixelRatio),
-    );*/
-    this.bloomPass.setSize(window.innerWidth * this.bloomDownscaleFactor, window.innerHeight * this.bloomDownscaleFactor);
-  }
-
-  updateCamera(time) {
-    const wobble = events.state.distortion * 0.03 + events.state.bass_hit * 0.014;
-    this.cameraOffset.set(
-      Math.sin(time * 1.2) * wobble,
-      Math.cos(time * 1.45) * wobble * 0.8 + events.state.rms * 0.15,
-      Math.sin(time * 0.92 + 0.6) * wobble * 0.5,
-    );
-
-    this.camera.position.copy(this.cameraBasePosition).add(this.cameraOffset);
-    this.cameraLookAt.lerp(this.cameraTarget, 0.12);
-    this.camera.lookAt(this.cameraLookAt);
-  }
-
-  updateStationMotion(time, dt) {
-    const spinSpeed = 0.14 + events.state.globalSpeed * 0.2 + events.state.bands.lowmid * 0.08;
-    this.stationSpinAngle += dt * spinSpeed;
-    this.stationSpinGroup.quaternion.setFromAxisAngle(this.stationAxis, this.stationSpinAngle);
-
-    this.stationAnchor.position.y = Math.sin(time * 0.42) * 0.26 + events.state.rms * 0.34;
-    this.stationAnchor.rotation.x = -0.18 + Math.sin(time * 0.1) * 0.03 + events.state.bands.mid * 0.025;
-    this.stationAnchor.rotation.y = 0.48 + events.state.bands.lowmid * 0.04;
-    this.stationAnchor.rotation.z = 0.06 + Math.sin(time * 0.05) * 0.025 - events.state.centroid * 0.04;
-
-    if (this.stationModel) {
-      const modelScale = 1 + events.state.pulse * 0.028 + events.state.bass_hit * 0.016;
-      this.stationModel.scale.setScalar(this.baseModelScale * modelScale);
-    }
-  }
-
-  updateStationStyling(time) {
-    const { bands, bass_hit: bassHit, pulse, shimmer, sweep, centroid, rms } = events.state;
-
-    this.wireMaterials.panels.color.copy(CYAN).lerp(BLUE, bands.lowmid * 0.3).lerp(PINK, shimmer * 0.14);
-    this.wireMaterials.panels.opacity = 0.38 + bands.lowmid * 0.22 + shimmer * 0.12;
-
-    this.wireMaterials.core.color.copy(PINK).lerp(CYAN, sweep * 0.24);
-    this.wireMaterials.core.opacity = 0.34 + bands.mid * 0.32 + sweep * 0.12;
-
-    this.wireMaterials.fore.color.copy(CYAN).lerp(BLUE, centroid * 0.24);
-    this.wireMaterials.fore.opacity = 0.28 + shimmer * 0.24 + centroid * 0.12;
-
-    this.wireMaterials.aft.color.copy(ORANGE).lerp(PINK, bassHit * 0.12);
-    this.wireMaterials.aft.opacity = 0.34 + bassHit * 0.28 + pulse * 0.12;
-
-    this.wireMaterials.body.color.copy(CYAN).lerp(BLUE, sweep * 0.18);
-    this.wireMaterials.body.opacity = 0.24 + pulse * 0.16;
-
-    this.vertexMaterials.body.color.copy(CYAN).lerp(BLUE, sweep * 0.18);
-    this.vertexMaterials.body.opacity = 0.28 + pulse * 0.18;
-    this.vertexMaterials.core.color.copy(PINK).lerp(CYAN, sweep * 0.2);
-    this.vertexMaterials.core.opacity = 0.46 + bands.mid * 0.24 + sweep * 0.14;
-    this.vertexMaterials.fore.color.copy(CYAN).lerp(BLUE, centroid * 0.2);
-    this.vertexMaterials.fore.opacity = 0.36 + shimmer * 0.22 + centroid * 0.1;
-    this.vertexMaterials.aft.color.copy(ORANGE).lerp(PINK, pulse * 0.12);
-    this.vertexMaterials.aft.opacity = 0.4 + bassHit * 0.22 + pulse * 0.1;
-
-    this.panelEntries.forEach((entry, index) => {
-      const intensity = bands.lowmid * 0.58 + shimmer * 0.42 + Math.sin(time * 1.3 + index * 0.7) * 0.04;
-      const opacity = Math.max(0, intensity - 0.16) * 0.34;
-      entry.frontMaterial.color.copy(CYAN).lerp(PINK, shimmer * 0.18);
-      entry.backMaterial.color.copy(CYAN).lerp(BLUE, bands.high * 0.2);
-      entry.frontMaterial.opacity = opacity;
-      entry.backMaterial.opacity = opacity * 0.82;
-    });
-
-    this.coreEffects.forEach((effect, index) => {
-      const scale = 1 + bands.mid * 0.5 + sweep * 0.18 + Math.sin(time * 1.8 + index) * 0.06;
-      effect.scale.setScalar(scale);
-      effect.material.opacity = 0.12 + bands.mid * 0.22 + sweep * 0.12;
-      effect.material.color.copy(PINK).lerp(CYAN, sweep * 0.22);
-      effect.rotation.x = time * (0.5 + index * 0.03);
-      effect.rotation.y = time * (0.8 + index * 0.04);
-    });
-
-    this.foreEffects.forEach((effect, index) => {
-      const scale = 1 + shimmer * 0.32 + centroid * 0.18;
-      effect.scale.setScalar(scale);
-      effect.material.opacity = 0.08 + shimmer * 0.24 + centroid * 0.12;
-      effect.material.color.copy(CYAN).lerp(BLUE, centroid * 0.24);
-      effect.rotation.z = -time * (0.8 + index * 0.03);
-    });
-
-    this.aftEffects.forEach((effect, index) => {
-      const scale = 1 + bassHit * 0.55 + pulse * 0.16;
-      effect.scale.setScalar(scale);
-      effect.material.opacity = 0.1 + bassHit * 0.3 + pulse * 0.12;
-      effect.material.color.copy(ORANGE).lerp(PINK, pulse * 0.16);
-      effect.rotation.x = time * (0.65 + index * 0.02);
-      effect.rotation.z = time * (0.45 + index * 0.03);
-    });
-
-    this.starfield.rotation.y = time * 0.008;
-    this.backdropArcs.rotation.z = time * 0.016;
+    this.applyQualityProfile(true);
   }
 
   updatePostProcessing(time) {
-    this.bloomPass.strength = 0.42 + events.state.pulse * 0.24 + events.state.shimmer * 0.2;
-    this.bloomPass.radius = 0.42 + events.state.centroid * 0.16;
-    this.renderer.toneMappingExposure = 0.98 + events.state.energy * 0.12 + events.state.rms * 0.08;
+    const qualityProfile = this.activeQualityProfile;
+    const bloomActive =
+      qualityProfile.enableBloom &&
+      (events.state.energy > 0.05 ||
+        events.state.pulse > 0.04 ||
+        events.state.shimmer > 0.04);
+    const grainActive =
+      qualityProfile.enableGrain &&
+      (events.state.energy > 0.03 ||
+        events.state.fringe > 0.01 ||
+        events.state.distortion > 0.01);
 
-    this.grainPass.uniforms.u_time.value = time;
-    this.grainPass.uniforms.u_strength.value = 0.022 + events.state.energy * 0.014;
-    this.grainPass.uniforms.u_scanline.value = 0.05 + events.state.shimmer * 0.05;
-    this.grainPass.uniforms.u_fringe.value = events.state.fringe * 0.24 + events.state.distortion * 0.14;
+    this.bloomPass.enabled = bloomActive;
+    this.grainPass.enabled = grainActive;
+
+    if (bloomActive) {
+      this.bloomPass.strength =
+        0.42 + events.state.pulse * 0.24 + events.state.shimmer * 0.2;
+      this.bloomPass.radius = 0.42 + events.state.centroid * 0.16;
+    }
+
+    this.renderer.toneMappingExposure =
+      0.98 + events.state.energy * 0.12 + events.state.rms * 0.08;
+
+    if (grainActive) {
+      this.grainPass.uniforms.u_time.value = time;
+      this.grainPass.uniforms.u_strength.value =
+        0.022 + events.state.energy * 0.014;
+      this.grainPass.uniforms.u_scanline.value =
+        0.05 + events.state.shimmer * 0.05;
+      this.grainPass.uniforms.u_fringe.value =
+        events.state.fringe * 0.24 + events.state.distortion * 0.14;
+    }
 
     this.rimLight.intensity = 10 + events.state.pulse * 4;
     this.warmLight.intensity = 7 + events.state.bass_hit * 4.2;
     this.fillLight.intensity = 6 + events.state.centroid * 2.4;
   }
 
-  updateTelemetryHud(time) {
-    if (!this.telemetryRoot) return;
-
-    const xShift = (Math.sin(time * 2.4) * events.state.fringe * 10).toFixed(2);
-    const yShift = (Math.cos(time * 1.7) * events.state.distortion * 6).toFixed(2);
-
-    this.telemetryRoot.style.setProperty('--terminal-shift-x', `${xShift}px`);
-    this.telemetryRoot.style.setProperty('--terminal-shift-y', `${yShift}px`);
-    this.telemetryRoot.style.setProperty('--terminal-opacity', `${0.62 + events.state.energy * 0.2 + events.state.shimmer * 0.08}`);
-    this.telemetryRoot.style.setProperty('--terminal-glow', `${0.24 + events.state.shimmer * 0.6 + events.state.fringe * 0.2}`);
-    this.telemetryRoot.style.borderColor = `rgba(121, 235, 255, ${0.2 + events.state.energy * 0.26})`;
-    this.telemetryStatus.style.color = events.state.bass_hit > 0.08 ? '#ff9f67' : '#ff7ee1';
-  }
-
-  updateBootTerminal(time, dt) {
-    if (!this.bootTerminalRoot) return;
-
-    if (!this.bootSequenceActive) {
-      this.bootTerminalFleeOffset.multiplyScalar(Math.max(0, 1 - dt * 6));
-      return;
-    }
-
-    const rect = this.bootTerminalRoot.getBoundingClientRect();
-    const centerX = rect.left + rect.width * 0.5;
-    const centerY = rect.top + rect.height * 0.5;
-    const awayX = centerX - this.pointerPosition.x;
-    const awayY = centerY - this.pointerPosition.y;
-    const distance = Math.hypot(awayX, awayY);
-    const speed = Math.hypot(this.pointerVelocity.x, this.pointerVelocity.y);
-    const radius = Math.max(rect.width, rect.height) * 0.78;
-    const isPointerInside = this.pointerPosition.x >= rect.left
-      && this.pointerPosition.x <= rect.right
-      && this.pointerPosition.y >= rect.top
-      && this.pointerPosition.y <= rect.bottom;
-    const proximity = THREE.MathUtils.clamp(1 - distance / radius, 0, 1);
-    const approach = speed > 0.001 && distance > 0.001
-      ? THREE.MathUtils.clamp((this.pointerVelocity.x * awayX + this.pointerVelocity.y * awayY) / (speed * distance), 0, 1)
-      : 0;
-    const threat = this.pointerActive
-      ? isPointerInside
-        ? 1
-        : proximity > 0 && (approach > 0.12 || distance < Math.min(rect.width, rect.height) * 0.32)
-          ? proximity * (0.55 + approach * 0.75)
-          : 0
-      : 0;
-    const maxTravelX = Math.max(0, window.innerWidth * 0.5 - rect.width * 0.58 - 28);
-    const maxTravelY = Math.max(0, window.innerHeight * 0.5 - rect.height * 0.58 - 28);
-    const directionX = distance > 0.001 ? awayX / distance : (this.pointerVelocity.x <= 0 ? 1 : -1);
-    const directionY = distance > 0.001 ? awayY / distance : (this.pointerVelocity.y <= 0 ? 1 : -1);
-    const rawTargetX = threat > 0 ? directionX * maxTravelX * Math.min(1, threat * 1.35) : this.bootTerminalFleeOffset.x;
-    const rawTargetY = threat > 0 ? directionY * maxTravelY * Math.min(1, threat * 1.05) : this.bootTerminalFleeOffset.y;
-    // Flee offset may only grow in magnitude — never drift back toward center
-    const targetOffsetX = threat > 0 && Math.abs(rawTargetX) < Math.abs(this.bootTerminalFleeOffset.x)
-      ? this.bootTerminalFleeOffset.x : rawTargetX;
-    const targetOffsetY = threat > 0 && Math.abs(rawTargetY) < Math.abs(this.bootTerminalFleeOffset.y)
-      ? this.bootTerminalFleeOffset.y : rawTargetY;
-    const evadeBlend = Math.min(1, dt * (threat > 0 ? 11 : 5));
-
-    this.bootTerminalFleeOffset.x = THREE.MathUtils.lerp(this.bootTerminalFleeOffset.x, targetOffsetX, evadeBlend);
-    this.bootTerminalFleeOffset.y = THREE.MathUtils.lerp(this.bootTerminalFleeOffset.y, targetOffsetY, evadeBlend);
-
-    const xShift = Math.sin(time * 18) * (1.2 + events.state.fringe * 6) + this.bootTerminalFleeOffset.x;
-    const yShift = Math.cos(time * 13) * (0.8 + events.state.distortion * 4) + this.bootTerminalFleeOffset.y;
-
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-shift-x', `${xShift.toFixed(2)}px`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-shift-y', `${yShift.toFixed(2)}px`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-opacity', `${0.96 - events.state.distortion * 0.08}`);
-    this.bootTerminalRoot.style.setProperty('--boot-terminal-glow', `${0.08 + events.state.fringe * 0.12}`);
-  }
-
   update() {
+    this.clock.update();
     const dt = this.clock.getDelta();
     this.accumulatedDt += dt;
     if (this.accumulatedDt < this.frameInterval) return;
 
     const frameDt = this.frameInterval;
     this.accumulatedDt %= this.frameInterval;
-    const time = this.clock.getElapsedTime();
+    const time = this.clock.getElapsed();
 
-    this.updateCamera(time);
+    this.updateCamera(time, frameDt);
     this.updateStationMotion(time, frameDt);
     this.updateStationStyling(time);
     this.updatePostProcessing(time);
-    this.updateTelemetryHud(time);
-    this.updateBootTerminal(time, frameDt);
+    this.domAccumulatedDt += frameDt;
+    if (this.domAccumulatedDt >= this.domUpdateInterval) {
+      const domDt = this.domAccumulatedDt;
+      this.domAccumulatedDt %= this.domUpdateInterval;
 
-    this.composer.render();
+      this.updateTelemetryHud(time);
+      this.updateVolumeControl(time);
+      this.updateTerminals(time, domDt);
+    }
+
+    const renderStart = performance.now();
+    this.renderScene();
+    this.updatePerformanceBudget(
+      (performance.now() - renderStart) / 1000,
+      frameDt,
+    );
   }
 }
+
+attachStationVisualMethods(SpaceStationScene);
+attachTerminalRuntimeMethods(SpaceStationScene);

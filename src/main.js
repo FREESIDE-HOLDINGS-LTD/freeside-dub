@@ -7,17 +7,90 @@ import { SpaceStationScene } from './scene.js';
 const STREAM_STATUS_URL = 'https://mixnet.dev/status-json.xsl';
 const STREAM_URL = 'https://mixnet.dev/stream';
 const FALLBACK_AUDIO_URL = '/audio.ogg';
+const VOLUME_STORAGE_KEY = 'freeside-dub:volume';
+const BOOT_SHOWN_STORAGE_KEY = 'freeside-dub:boot-shown';
+const DEFAULT_VOLUME = 0.8;
 
 let scene;
 let lastTime = performance.now();
 let hasStarted = false;
 
-function setStatus(statusLabel, text) {
-  statusLabel.innerHTML = `<strong>Status</strong> ${text}`;
+function readStorageItem(key, fallback, onError = null) {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value;
+  } catch (error) {
+    onError?.(error);
+    return fallback;
+  }
 }
 
-function setMode(modeLabel, text) {
-  modeLabel.innerHTML = `<strong>Mode</strong> ${text}`;
+function writeStorageItem(key, value, onError = null) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    onError?.(error);
+  }
+}
+
+function loadStoredVolume() {
+  const raw = readStorageItem(VOLUME_STORAGE_KEY, null, (error) => {
+    console.error('Failed to read stored volume', error);
+  });
+  if (raw === null) return DEFAULT_VOLUME;
+
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_VOLUME;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function persistVolume(volume) {
+  writeStorageItem(VOLUME_STORAGE_KEY, String(volume), (error) => {
+    console.error('Failed to persist volume', error);
+  });
+}
+
+function hasBootBeenShown() {
+  return readStorageItem(BOOT_SHOWN_STORAGE_KEY, '0') === '1';
+}
+
+function persistBootShown() {
+  writeStorageItem(BOOT_SHOWN_STORAGE_KEY, '1', (error) => {
+    console.error('Failed to persist boot-shown flag', error);
+  });
+}
+
+function setupVolumeControl() {
+  const root = document.getElementById('volume-control');
+  const slider = document.getElementById('volume-slider');
+  const valueLabel = document.getElementById('volume-value');
+
+  const initialVolume = loadStoredVolume();
+  audio.setVolume(initialVolume);
+
+  const initialPercent = Math.round(initialVolume * 100);
+  slider.value = String(initialPercent);
+  valueLabel.textContent = String(initialPercent);
+
+  slider.addEventListener('input', () => {
+    const percent = Number.parseInt(slider.value, 10);
+    const volume = Number.isFinite(percent) ? percent / 100 : DEFAULT_VOLUME;
+    audio.setVolume(volume);
+    valueLabel.textContent = String(percent);
+    persistVolume(volume);
+  });
+
+  return root;
+}
+
+function revealVolumeControl(root) {
+  root.classList.remove('hidden');
+  root.setAttribute('aria-hidden', 'false');
+  scene.setVolumeControl(root);
+}
+
+function setLabel(label, title, text) {
+  label.innerHTML = `<strong>${title}</strong> ${text}`;
 }
 
 function parseStatusPayload(payload) {
@@ -79,6 +152,7 @@ async function resolveAudioSourceConfig() {
       url: FALLBACK_AUDIO_URL,
       label: 'Local fallback archive',
       status: 'FALLBACK',
+      isOfflineFallback: true,
       metadata: {
         title: 'Offline fallback archive',
         description: 'Mixnet relay unavailable. Switching to the bundled audio file.',
@@ -115,9 +189,8 @@ function buildMetadataEntries(audioSource) {
 }
 
 function renderMetadata(container, entries) {
-  container.replaceChildren();
-
-  entries.forEach(([label, value]) => {
+  container.classList.remove('metadata-grid--offline');
+  container.replaceChildren(...entries.map(([label, value]) => {
     const card = document.createElement('div');
     card.className = 'metadata-card';
 
@@ -128,8 +201,22 @@ function renderMetadata(container, entries) {
     text.textContent = value;
 
     card.append(title, text);
-    container.append(card);
-  });
+    return card;
+  }));
+}
+
+function renderOfflineMetadata(container) {
+  container.classList.add('metadata-grid--offline');
+
+  const indicator = document.createElement('div');
+  indicator.className = 'offline-indicator';
+
+  const text = document.createElement('span');
+  text.className = 'offline-indicator__text';
+  text.dataset.text = text.textContent = 'OFFLINE';
+
+  indicator.append(text);
+  container.replaceChildren(indicator);
 }
 
 function sanitizeTerminalValue(value, maxLength = 54) {
@@ -145,37 +232,49 @@ function sanitizeTerminalValue(value, maxLength = 54) {
   return normalized.slice(0, maxLength).toUpperCase();
 }
 
+function findRuntimeLabel(matchers, context, fallback) {
+  const match = matchers.find(([, matches]) => matches(context));
+  return match ? match[0] : fallback;
+}
+
+const BROWSER_MATCHERS = [
+  ['BRAVE', ({ brandLabel }) => brandLabel.includes('Brave') || navigator.brave],
+  ['EDGE', ({ userAgent, brandLabel }) => /Edg\//.test(userAgent) || brandLabel.includes('Microsoft Edge')],
+  ['OPERA', ({ userAgent, brandLabel }) => /OPR\//.test(userAgent) || brandLabel.includes('Opera')],
+  ['FIREFOX', ({ userAgent, brandLabel }) => /Firefox\//.test(userAgent) || brandLabel.includes('Firefox')],
+  ['CHROME', ({ userAgent, brandLabel }) => /Chrome\//.test(userAgent) || brandLabel.includes('Chromium') || brandLabel.includes('Google Chrome')],
+  ['SAFARI', ({ userAgent }) => /Safari\//.test(userAgent)],
+];
+
+const OPERATING_SYSTEM_MATCHERS = [
+  ['WINDOWS', ({ platform }) => /Windows/i.test(platform)],
+  ['ANDROID', ({ platform }) => /Android/i.test(platform)],
+  ['IOS', ({ platform }) => /(iPhone|iPad|iPod)/i.test(platform)],
+  ['MACOS', ({ platform }) => /Mac/i.test(platform)],
+  ['LINUX', ({ platform }) => /Linux/i.test(platform)],
+];
+
+const ENGINE_MATCHERS = [
+  ['GECKO', ({ userAgent }) => /Firefox\//.test(userAgent)],
+  ['BLINK', ({ userAgent }) => /AppleWebKit\//.test(userAgent) && /Chrome\//.test(userAgent)],
+  ['WEBKIT', ({ userAgent }) => /AppleWebKit\//.test(userAgent)],
+];
+
 function detectBrowserName(userAgent, brands) {
-  const brandLabel = brands.join(' ');
-
-  if (brandLabel.includes('Brave') || navigator.brave) return 'BRAVE';
-  if (/Edg\//.test(userAgent) || brandLabel.includes('Microsoft Edge')) return 'EDGE';
-  if (/OPR\//.test(userAgent) || brandLabel.includes('Opera')) return 'OPERA';
-  if (/Firefox\//.test(userAgent) || brandLabel.includes('Firefox')) return 'FIREFOX';
-  if (/Chrome\//.test(userAgent) || brandLabel.includes('Chromium') || brandLabel.includes('Google Chrome')) return 'CHROME';
-  if (/Safari\//.test(userAgent)) return 'SAFARI';
-
-  return 'UNKNOWN BROWSER';
+  return findRuntimeLabel(BROWSER_MATCHERS, {
+    userAgent,
+    brandLabel: brands.join(' '),
+  }, 'UNKNOWN BROWSER');
 }
 
 function detectOperatingSystem(userAgent, platformHint) {
-  const platform = `${platformHint || ''} ${userAgent}`;
-
-  if (/Windows/i.test(platform)) return 'WINDOWS';
-  if (/Android/i.test(platform)) return 'ANDROID';
-  if (/(iPhone|iPad|iPod)/i.test(platform)) return 'IOS';
-  if (/Mac/i.test(platform)) return 'MACOS';
-  if (/Linux/i.test(platform)) return 'LINUX';
-
-  return 'UNKNOWN OS';
+  return findRuntimeLabel(OPERATING_SYSTEM_MATCHERS, {
+    platform: `${platformHint || ''} ${userAgent}`,
+  }, 'UNKNOWN OS');
 }
 
 function detectEngineName(userAgent) {
-  if (/Firefox\//.test(userAgent)) return 'GECKO';
-  if (/AppleWebKit\//.test(userAgent) && /Chrome\//.test(userAgent)) return 'BLINK';
-  if (/AppleWebKit\//.test(userAgent)) return 'WEBKIT';
-
-  return 'UNKNOWN ENGINE';
+  return findRuntimeLabel(ENGINE_MATCHERS, { userAgent }, 'UNKNOWN ENGINE');
 }
 
 function collectExtensionSignals() {
@@ -221,29 +320,26 @@ function buildRuntimeProfile() {
     navigator.deviceMemory ? `${navigator.deviceMemory}GB HINT` : 'MEM ?',
   ].join(' / ');
   const inputSummary = navigator.maxTouchPoints ? `${navigator.maxTouchPoints} TOUCH POINTS` : 'MOUSE BIAS';
-  const dntValue = navigator.doNotTrack === '1'
-    ? 'ON'
-    : navigator.doNotTrack === '0'
-      ? 'OFF'
-      : 'UNSET';
+  const dntValue = { '1': 'ON', '0': 'OFF' }[navigator.doNotTrack] ?? 'UNSET';
   const brandSummary = brands.length ? brands.join(' | ') : 'UA-CH WITHHELD';
+  const bootLineSpecs = [
+    ['Probe   client shell ......... ', `${browser} / ${operatingSystem}`, 28],
+    ['Probe   render engine ........ ', engine, 28],
+    ['Probe   ua brands ............ ', brandSummary, 42],
+    ['Probe   locale / zone ........ ', `${languages.slice(0, 3).join(', ')} / ${timezone}`, 42],
+    ['Probe   screen lattice ....... ', screenSummary, 42],
+    ['Probe   cores / mem .......... ', resourceSummary, 42],
+    ['Probe   input residue ........ ', inputSummary, 42],
+    ['Probe   do-not-track ......... ', dntValue, 42],
+    ['Probe   ext residue .......... ', extensionSummary, 42],
+  ];
 
   return {
     browser,
     operatingSystem,
     engine,
     extensionSummary,
-    bootLines: [
-      `Probe   client shell ......... ${sanitizeTerminalValue(`${browser} / ${operatingSystem}`, 28)}`,
-      `Probe   render engine ........ ${sanitizeTerminalValue(engine, 28)}`,
-      `Probe   ua brands ............ ${sanitizeTerminalValue(brandSummary, 42)}`,
-      `Probe   locale / zone ........ ${sanitizeTerminalValue(`${languages.slice(0, 3).join(', ')} / ${timezone}`, 42)}`,
-      `Probe   screen lattice ....... ${sanitizeTerminalValue(screenSummary, 42)}`,
-      `Probe   cores / mem .......... ${sanitizeTerminalValue(resourceSummary, 42)}`,
-      `Probe   input residue ........ ${sanitizeTerminalValue(inputSummary, 42)}`,
-      `Probe   do-not-track ......... ${sanitizeTerminalValue(dntValue, 42)}`,
-      `Probe   ext residue .......... ${sanitizeTerminalValue(extensionSummary, 42)}`,
-    ],
+    bootLines: bootLineSpecs.map(([prefix, value, maxLength]) => `${prefix}${sanitizeTerminalValue(value, maxLength)}`),
   };
 }
 
@@ -281,27 +377,33 @@ async function init() {
 
   new FaviconCycler().start();
 
+  const volumeControl = setupVolumeControl();
+
   const runtimeProfile = buildRuntimeProfile();
   scene = new SpaceStationScene(canvasContainer, { bootTerminalOs: runtimeProfile.operatingSystem });
-  setMode(modeLabel, 'Deep space telemetry');
-  setStatus(statusLabel, 'Polling uplink');
+  setLabel(modeLabel, 'Mode', 'Deep space telemetry');
+  setLabel(statusLabel, 'Status', 'Polling uplink');
 
   const audioSource = await resolveAudioSourceConfig();
   subhead.textContent = audioSource.summaryLabel;
   bodyCopy.textContent = audioSource.detailText;
   hint.textContent = audioSource.hintText;
-  renderMetadata(metadataContainer, buildMetadataEntries(audioSource));
-  setMode(modeLabel, audioSource.modeLabel);
+  if (audioSource.isOfflineFallback) {
+    renderOfflineMetadata(metadataContainer);
+  } else {
+    renderMetadata(metadataContainer, buildMetadataEntries(audioSource));
+  }
+  setLabel(modeLabel, 'Mode', audioSource.modeLabel);
   scene.setTelemetry(buildTerminalTelemetry(audioSource, runtimeProfile));
 
   audio.load(audioSource).then(() => {
     startBtn.innerText = audioSource.buttonLabel;
-    setStatus(statusLabel, audioSource.readyLabel);
+    setLabel(statusLabel, 'Status', audioSource.readyLabel);
     startBtn.disabled = false;
   }).catch((error) => {
     console.error('Failed to load audio source', error);
     startBtn.innerText = 'LINK ERROR';
-    setStatus(statusLabel, audioSource.failureLabel);
+    setLabel(statusLabel, 'Status', audioSource.failureLabel);
   });
 
   startBtn.addEventListener('click', async () => {
@@ -314,9 +416,13 @@ async function init() {
       hasStarted = true;
       lastTime = performance.now();
       uiOverlay.classList.add('hidden');
+      revealVolumeControl(volumeControl);
       scene.setTelemetryVisible(true);
       scene.enableBootTerminalHotkeys();
-      setTimeout(() => scene.playStartupTerminal(), 1000);
+      if (!hasBootBeenShown()) {
+        persistBootShown();
+        setTimeout(() => scene.playStartupTerminal(), 1000);
+      }
 
       events.state.distortion = 1.4;
       events.state.fringe = 0.8;
@@ -327,7 +433,7 @@ async function init() {
       console.error('Failed to start audio playback', error);
       startBtn.disabled = false;
       startBtn.innerText = 'RETRY LINK';
-      setStatus(statusLabel, 'PLAYBACK AUTHORIZATION FAILED');
+      setLabel(statusLabel, 'Status', 'PLAYBACK AUTHORIZATION FAILED');
     }
   });
 }
