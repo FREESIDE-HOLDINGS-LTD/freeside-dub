@@ -8,6 +8,7 @@ const STREAM_STATUS_URL = 'https://mixnet.dev/status-json.xsl';
 const STREAM_URL = 'https://mixnet.dev/stream';
 const FALLBACK_AUDIO_URL = '/audio.ogg';
 const VOLUME_STORAGE_KEY = 'freeside-dub:volume';
+const BOOT_SHOWN_STORAGE_KEY = 'freeside-dub:boot-shown';
 const DEFAULT_VOLUME = 0.8;
 
 let scene;
@@ -32,6 +33,22 @@ function persistVolume(volume) {
     localStorage.setItem(VOLUME_STORAGE_KEY, String(volume));
   } catch (error) {
     console.error('Failed to persist volume', error);
+  }
+}
+
+function hasBootBeenShown() {
+  try {
+    return localStorage.getItem(BOOT_SHOWN_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistBootShown() {
+  try {
+    localStorage.setItem(BOOT_SHOWN_STORAGE_KEY, '1');
+  } catch (error) {
+    console.error('Failed to persist boot-shown flag', error);
   }
 }
 
@@ -394,7 +411,10 @@ async function init() {
       revealVolumeControl(volumeControl);
       scene.setTelemetryVisible(true);
       scene.enableBootTerminalHotkeys();
-      setTimeout(() => scene.playStartupTerminal(), 1000);
+      if (!hasBootBeenShown()) {
+        persistBootShown();
+        setTimeout(() => scene.playStartupTerminal(), 1000);
+      }
 
       events.state.distortion = 1.4;
       events.state.fringe = 0.8;
