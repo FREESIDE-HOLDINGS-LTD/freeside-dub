@@ -10,6 +10,13 @@ const BAND_CONFIGS = [
   { name: 'high', minFreq: 4500, maxFreq: 14000, triggerThreshold: 0.56, minLevel: 0.16, cooldownMax: 0.07, initialPeak: 0.4, hitState: 'high_hit' },
 ];
 
+// Live stream recovery: if playback stops advancing (network drop, server
+// closing the connection, decoder error) reconnect with exponential backoff.
+const STREAM_STALL_TIMEOUT_MS = 8000;
+const STREAM_WATCHDOG_INTERVAL_MS = 1000;
+const STREAM_RETRY_BASE_MS = 1000;
+const STREAM_RETRY_MAX_MS = 15000;
+
 export class AudioEngine {
   constructor() {
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -31,6 +38,7 @@ export class AudioEngine {
     this.bufferSource = null;
     this.mediaElement = null;
     this.mediaElementSource = null;
+    this.streamRecovery = null;
     this.currentSource = null;
     this.currentSourceType = 'buffer';
     this.isLoaded = false;
@@ -122,6 +130,7 @@ export class AudioEngine {
   disconnectMediaElement() {
     if (!this.mediaElement) return;
 
+    this.stopStreamRecovery();
     this.mediaElement.pause();
 
     if (this.mediaElementSource) {
@@ -251,10 +260,130 @@ export class AudioEngine {
       throw new Error('No live stream element is available for playback.');
     }
 
+    // The connection opened by preload may have died while waiting for the
+    // click; start a fresh request instead of replaying a dead element.
+    if (this.mediaElement.error || this.mediaElement.ended) {
+      this.mediaElement.load();
+    }
+
     const playPromise = this.mediaElement.play();
     if (playPromise) {
       await playPromise;
     }
+
+    this.startStreamRecovery();
+  }
+
+  startStreamRecovery() {
+    this.stopStreamRecovery();
+    const element = this.mediaElement;
+    if (!element) return;
+
+    const recovery = {
+      attempt: 0,
+      generation: 0,
+      retryTimer: null,
+      watchdogTimer: null,
+      lastCurrentTime: element.currentTime,
+      lastProgressAt: performance.now(),
+    };
+
+    const reconnectLater = () => this.scheduleStreamReconnect();
+    const elementListeners = {
+      timeupdate: () => {
+        if (element.currentTime !== recovery.lastCurrentTime) {
+          recovery.lastCurrentTime = element.currentTime;
+          recovery.lastProgressAt = performance.now();
+        }
+      },
+      playing: () => {
+        recovery.attempt = 0;
+        recovery.lastProgressAt = performance.now();
+      },
+      ended: reconnectLater,
+      error: reconnectLater,
+    };
+    const onOnline = () => {
+      // Network came back while waiting out a backoff: retry right away.
+      if (!recovery.retryTimer) return;
+      clearTimeout(recovery.retryTimer);
+      recovery.retryTimer = null;
+      recovery.attempt = 0;
+      this.reconnectStream();
+    };
+
+    for (const [type, listener] of Object.entries(elementListeners)) {
+      element.addEventListener(type, listener);
+    }
+    window.addEventListener('online', onOnline);
+
+    recovery.watchdogTimer = setInterval(() => {
+      const now = performance.now();
+      // Respect deliberate pauses (e.g. OS media keys); ended/error are handled by events.
+      if (recovery.retryTimer || (element.paused && !element.ended && !element.error)) {
+        recovery.lastProgressAt = now;
+        return;
+      }
+      if (now - recovery.lastProgressAt > STREAM_STALL_TIMEOUT_MS) {
+        console.warn('Live stream stalled, reconnecting.');
+        this.scheduleStreamReconnect();
+      }
+    }, STREAM_WATCHDOG_INTERVAL_MS);
+
+    recovery.dispose = () => {
+      for (const [type, listener] of Object.entries(elementListeners)) {
+        element.removeEventListener(type, listener);
+      }
+      window.removeEventListener('online', onOnline);
+      clearInterval(recovery.watchdogTimer);
+      clearTimeout(recovery.retryTimer);
+    };
+
+    this.streamRecovery = recovery;
+  }
+
+  stopStreamRecovery() {
+    this.streamRecovery?.dispose();
+    this.streamRecovery = null;
+  }
+
+  scheduleStreamReconnect() {
+    const recovery = this.streamRecovery;
+    if (!recovery || recovery.retryTimer) return;
+
+    const delay = Math.min(STREAM_RETRY_MAX_MS, STREAM_RETRY_BASE_MS * 2 ** recovery.attempt);
+    recovery.attempt += 1;
+    recovery.retryTimer = setTimeout(() => {
+      recovery.retryTimer = null;
+      this.reconnectStream();
+    }, delay);
+  }
+
+  reconnectStream() {
+    const recovery = this.streamRecovery;
+    const element = this.mediaElement;
+    if (!recovery || !element || !this.currentSource) return;
+
+    recovery.generation += 1;
+    const generation = recovery.generation;
+
+    // Give the new connection a full stall window before the watchdog judges it.
+    recovery.lastProgressAt = performance.now();
+    recovery.lastCurrentTime = element.currentTime;
+
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+
+    // Same element is reused: a MediaElementSourceNode can only be created once per element.
+    element.src = this.currentSource.url;
+    element.load();
+    element.play().catch((error) => {
+      // A newer attempt replaced this src (AbortError) or recovery was torn down.
+      if (this.streamRecovery !== recovery || recovery.generation !== generation) return;
+      console.warn('Live stream reconnect failed, retrying.', error);
+      this.scheduleStreamReconnect();
+    });
   }
 
   setVolume(volume) {
